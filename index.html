@@ -29,7 +29,7 @@ label.small{font-size:13px;color:var(--muted)}input[type=range]{width:180px}.sta
   <section class="card">
     <h2>1. Upload your PNG alpha</h2>
     <div class="drop"><div style="font-weight:800;margin-bottom:10px">📷 Choose PNG / Photo</div>
-      <input id="file" class="picker" type="file" accept="image/png,image/jpeg,image/webp,image/*">
+      <input id="file" class="picker" type="file" accept="image/*">
       <button id="loadSelectedImage" type="button" style="margin-top:10px;width:100%">Load Selected Image</button>
     </div>
     <div class="row" style="margin-top:12px">
@@ -111,34 +111,46 @@ let source=null, pieces=[];
 const sheet=$("#sheet"), ctx=sheet.getContext("2d",{willReadFrequently:true});
 
 async function loadMainImage(){
- const input=$("#file"), f=input.files && input.files[0];
+ const input=$("#file");
+ const f=input && input.files && input.files[0];
  if(!f){$("#status").textContent="Choose a photo first.";return;}
+
  $("#status").textContent="Loading selected image…";
  try{
-   const data=await new Promise((resolve,reject)=>{
-     const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=reject;r.readAsDataURL(f);
-   });
+   // Object URLs are more reliable than FileReader for large iPhone Photos files.
+   const url=URL.createObjectURL(f);
    const im=await new Promise((resolve,reject)=>{
-     const x=new Image();x.onload=()=>resolve(x);x.onerror=reject;x.src=data;
+     const x=new Image();
+     x.onload=()=>resolve(x);
+     x.onerror=()=>reject(new Error("The selected photo could not be decoded."));
+     x.src=url;
    });
+
    source=im;
+   const iw=im.naturalWidth||im.width, ih=im.naturalHeight||im.height;
    const maxSide=2400;
-   const scale=Math.min(1,maxSide/Math.max(im.naturalWidth||im.width,im.naturalHeight||im.height));
-   sheet.width=Math.max(1,Math.round((im.naturalWidth||im.width)*scale));
-   sheet.height=Math.max(1,Math.round((im.naturalHeight||im.height)*scale));
+   const scale=Math.min(1,maxSide/Math.max(iw,ih));
+   sheet.width=Math.max(1,Math.round(iw*scale));
+   sheet.height=Math.max(1,Math.round(ih*scale));
    ctx.clearRect(0,0,sheet.width,sheet.height);
    ctx.drawImage(im,0,0,sheet.width,sheet.height);
    sheet.classList.remove("hide");
    $("#status").textContent=`Image loaded (${sheet.width} × ${sheet.height}). Detecting…`;
-   setTimeout(detect,100);
+
+   // Keep the image alive through drawing, then release the temporary URL.
+   setTimeout(()=>URL.revokeObjectURL(url),5000);
+   setTimeout(()=>detect(),150);
  }catch(err){
    console.error(err);
-   $("#status").textContent="Could not load this image in the browser. Try PNG or JPG.";
+   source=null;
+   $("#status").textContent="Could not load that photo. Try saving it as PNG or JPG first.";
+   alert("Upload error: "+err.message);
  }
 }
-$("#file").addEventListener("change",()=>loadMainImage());
-$("#file").addEventListener("input",()=>loadMainImage());
-$("#loadSelectedImage").addEventListener("click",()=>loadMainImage());
+
+// One event only prevents duplicate iPhone/Safari upload handling.
+$("#file").onchange=()=>loadMainImage();
+$("#loadSelectedImage").onclick=()=>loadMainImage();
 $("#detect").onclick=detect;
 
 function detect(){
