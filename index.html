@@ -606,9 +606,7 @@ $("#exportOTF").onclick=async()=>{
      try{
        const data=await response.json();
        if(data.error)message=data.error;
-       if(data.details)message+="
-
-"+data.details;
+       if(data.details)message+="\\n\\n"+data.details;
      }catch{}
      throw new Error(message);
    }
@@ -631,9 +629,7 @@ $("#exportOTF").onclick=async()=>{
  }catch(err){
    console.error(err);
    $("#status").textContent="Color font compilation failed.";
-   alert("Font compiler error:
-
-"+err.message);
+   alert("Font compiler error:\\n\\n"+err.message);
  }finally{
    btn.disabled=false;
    btn.textContent=old;
