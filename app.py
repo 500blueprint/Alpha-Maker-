@@ -120,13 +120,14 @@ color_format = "glyf_colr_1"
 ''',
             encoding="utf-8"
         )
-
         command = [
             "nanoemoji",
             "--config",
             str(config),
             *svg_files
         ]
+
+        
 
         result = subprocess.run(
             command,
