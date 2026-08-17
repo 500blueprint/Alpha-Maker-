@@ -96,13 +96,13 @@ label.small{font-size:13px;color:var(--muted)}input[type=range]{width:180px}.sta
     <h2>6. Export & Save</h2>
     <div class="row">
       <input id="fontName" value="Moonlight Color Alpha" aria-label="Font name" style="flex:1;min-width:210px;padding:13px;border-radius:14px;background:#0d0918;color:#fff;border:1px solid #ffffff22">
-      <button id="exportOTF">Export Color OTF</button>
+      <button id="exportOTF">Export PNG Color OTF</button>
       <button id="exportZIP" class="secondary">Export ZIP Folder</button>
       <button id="saveProject" class="secondary">Save .MCFM Project</button>
       <button id="loadProjectBtn" class="secondary">Open Project</button>
       <input id="loadProject" type="file" accept=".mcfm,application/json" style="display:none">
     </div>
-    <p class="note"><b>Color OTF:</b> exports an OpenType font containing SVG color glyphs. Apps must support OpenType SVG color fonts to display the original artwork in color; unsupported apps may not render these glyphs.</p>
+    <p class="note"><b>Color OTF:</b> exports an OpenType font with the PNG artwork embedded directly as bitmap color glyphs (sbix), plus SVG color glyph data for additional compatibility. The images are stored inside the font file. Apps still need color-font support to display them.</p>
   </section>
 </div>
 <script>
@@ -447,12 +447,44 @@ function table_svg(glyphs){
  let head=U8(10);be16(head,0,0);be32(head,2,10);be32(head,6,0);
  return cat(head,index,...docs)
 }
+
+function dataURLBytes(url){
+ const b64=url.split(",")[1]||"";
+ const bin=atob(b64),a=new Uint8Array(bin.length);
+ for(let i=0;i<bin.length;i++)a[i]=bin.charCodeAt(i);
+ return a;
+}
+function table_sbix(glyphs){
+ // Apple sbix bitmap color glyph table: embeds each PNG directly in the font.
+ // header: version=1, flags=1, numStrikes=1, strikeOffset=12
+ const n=glyphs.length, head=U8(12);
+ be16(head,0,1);be16(head,2,1);be32(head,4,1);be32(head,8,12);
+ // strike header: ppem, ppi, offsets[n+1]
+ const strikeHead=U8(4+(n+1)*4);
+ be16(strikeHead,0,128);be16(strikeHead,2,72);
+ let chunks=[],off=strikeHead.length;
+ for(let gid=0;gid<n;gid++){
+   be32(strikeHead,4+gid*4,off);
+   if(gid===0) continue;
+   const png=dataURLBytes(glyphs[gid].png);
+   const rec=U8(8+png.length);
+   beS16(rec,0,0);beS16(rec,2,0);
+   rec.set(tag4("png "),4);rec.set(png,8);
+   chunks.push(rec);off+=rec.length;
+ }
+ be32(strikeHead,4+n*4,off);
+ return cat(head,strikeHead,...chunks);
+}
+
 function buildOTF(fontName, mapped){
  const glyphs=[{char:"",png:""}].concat(mapped);
  const entries=mapped.map((g,i)=>({code:g.char.codePointAt(0),gid:i+1}));
  const gl=table_glyf_loca(glyphs.length);
  let tables={
-  "OS/2":table_os2(),"SVG ":table_svg(glyphs),cmap:table_cmap(entries),glyf:gl.glyf,
+  "OS/2":table_os2(),
+  "SVG ":table_svg(glyphs),
+  "sbix":table_sbix(glyphs),
+  cmap:table_cmap(entries),glyf:gl.glyf,
   head:table_head(),hhea:table_hhea(glyphs.length),hmtx:table_hmtx(glyphs.length),
   loca:gl.loca,maxp:table_maxp(glyphs.length),name:table_name(fontName),post:table_post()
  };
