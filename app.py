@@ -135,15 +135,17 @@ color_format = "glyf_colr_1"
             capture_output=True,
             text=True,
             timeout=120
-        )
 
-        if result.returncode != 0:
-    details = result.stdout or result.stderr
+            
+                    if result.returncode != 0:
+            details = result.stdout or result.stderr
 
-    return jsonify({
-        "error": "Font compiler failed.",
-        "details": details[-8000:]
-    }), 500
+            return jsonify({
+                "error": "Font compiler failed.",
+                "details": details[-8000:]
+            }), 500
+
+        fonts = list(output_dir.glob("*.ttf"))
 
         fonts = list(output_dir.glob("*.ttf"))
 
