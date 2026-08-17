@@ -122,7 +122,7 @@ color_format = "glyf_colr_1"
         )
         command = [
             "nanoemoji",
-            "--config",
+            "--config_file",
             str(config),
             *svg_files
         ]
