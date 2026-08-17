@@ -138,14 +138,11 @@ color_format = "glyf_colr_1"
         )
 
         if result.returncode != 0:
+    details = result.stdout or result.stderr
+
     return jsonify({
         "error": "Font compiler failed.",
-        "details": (
-            "STDOUT:\n" +
-            result.stdout[-5000:] +
-            "\n\nSTDERR:\n" +
-            result.stderr[-5000:]
-        )
+        "details": details[-8000:]
     }), 500
 
         fonts = list(output_dir.glob("*.ttf"))
