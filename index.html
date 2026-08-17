@@ -96,13 +96,13 @@ label.small{font-size:13px;color:var(--muted)}input[type=range]{width:180px}.sta
     <h2>6. Export & Save</h2>
     <div class="row">
       <input id="fontName" value="Moonlight Color Alpha" aria-label="Font name" style="flex:1;min-width:210px;padding:13px;border-radius:14px;background:#0d0918;color:#fff;border:1px solid #ffffff22">
-      <button id="exportOTF">Export PNG Color OTF</button>
+      <button id="exportOTF">Create Color Font</button>
       <button id="exportZIP" class="secondary">Export ZIP Folder</button>
       <button id="saveProject" class="secondary">Save .MCFM Project</button>
       <button id="loadProjectBtn" class="secondary">Open Project</button>
       <input id="loadProject" type="file" accept=".mcfm,application/json" style="display:none">
     </div>
-    <p class="note"><b>Color OTF:</b> exports an OpenType font with the PNG artwork embedded directly as bitmap color glyphs (sbix), plus SVG color glyph data for additional compatibility. The images are stored inside the font file. Apps still need color-font support to display them.</p>
+    <p class="note"><b>Color Font:</b> sends your assigned transparent PNG glyphs to the Moonlight compiler and downloads the finished installable color TTF. The free compiler may take up to about a minute to wake after inactivity.</p>
   </section>
 </div>
 <script>
@@ -366,15 +366,30 @@ $("#sortChars").onclick=()=>{pieces.sort((a,b)=>(a.char||"~").localeCompare(b.ch
 $("#clearBuilder").onclick=()=>{if(confirm("Clear all glyphs from the Alpha Builder?")){pieces=[];render();syncBuilder()}};
 
 $("#previewText").oninput=drawPreview;
-function drawPreview(){
- const c=$("#preview"),x=c.getContext("2d");x.clearRect(0,0,c.width,c.height);x.fillStyle="#fff";x.fillRect(0,0,c.width,c.height);
+let previewToken=0;
+async function drawPreview(){
+ const token=++previewToken,c=$("#preview"),x=c.getContext("2d");
+ x.clearRect(0,0,c.width,c.height);x.fillStyle="#fff";x.fillRect(0,0,c.width,c.height);
  const map=new Map(pieces.filter(p=>p.char).map(p=>[p.char.toUpperCase(),p]));
- const text=$("#previewText").value.toUpperCase();let px=18,base=165,maxH=130;
+ const text=$("#previewText").value.toUpperCase(), maxH=130, base=165;
+ let cursor=18, jobs=[];
  for(const ch of text){
-   if(ch===" "){px+=45;continue} const p=map.get(ch);if(!p){px+=45;continue}
-   const im=new Image(); im.onload=()=>{let h=maxH,w=im.width*(h/im.height);x.drawImage(im,px,base-h,w,h)};im.src=p.png;
-   px+=p?Math.min(100,Math.max(45,p.w/p.h*maxH+8)):45;
+   if(ch===" "){cursor+=45;continue}
+   const p=map.get(ch); if(!p){cursor+=45;continue}
+   const ratio=(p.w&&p.h)?p.w/p.h:1;
+   const dw=Math.min(110,Math.max(30,ratio*maxH));
+   const pos=cursor; cursor+=dw+8;
+   jobs.push(new Promise(resolve=>{
+     const im=new Image();
+     im.onload=()=>resolve({im,x:pos,w:dw,h:maxH});
+     im.onerror=()=>resolve(null);
+     im.src=p.png;
+   }));
  }
+ const loaded=await Promise.all(jobs);
+ if(token!==previewToken)return;
+ x.clearRect(0,0,c.width,c.height);x.fillStyle="#fff";x.fillRect(0,0,c.width,c.height);
+ loaded.filter(Boolean).forEach(o=>x.drawImage(o.im,o.x,base-o.h,o.w,o.h));
 }
 
 // ---- Minimal sfnt/OpenType writer with SVG color glyph table ----
@@ -540,17 +555,78 @@ Color display requires an app that supports OpenType SVG color fonts.
  }catch(e){console.error(e);alert("ZIP export failed: "+e.message)}
 };
 
-$("#exportOTF").onclick=()=>{
- const mapped=pieces.filter(p=>p.char && [...p.char][0]).map(p=>({...p,char:[...p.char][0]}));
- if(!mapped.length)return alert("Assign at least one character first.");
- const seen=new Set();for(const g of mapped){let cp=g.char.codePointAt(0);if(cp>0xffff)return alert("This version exports BMP characters only.");if(seen.has(cp))return alert("Each character can only be assigned once.");seen.add(cp)}
- const name=($("#fontName").value||"Moonlight Color Alpha").trim();
- try{
-   const bytes=buildOTF(name,mapped),blob=new Blob([bytes],{type:"font/otf"}),a=document.createElement("a");
-   a.href=URL.createObjectURL(blob);a.download=name.replace(/[^A-Za-z0-9_-]+/g,"-")+".otf";a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1500);
- }catch(e){console.error(e);alert("OTF export failed: "+e.message)}
-};
+$("#exportOTF").onclick=async()=>{
+ const btn=$("#exportOTF");
+ const mapped=pieces
+   .filter(p=>p.char && [...p.char][0] && p.png)
+   .map(p=>({...p,char:[...p.char][0]}));
 
+ if(!mapped.length){
+   alert("Upload your alpha and assign A–Z characters first.");
+   return;
+ }
+
+ const name=($("#fontName").value||"Moonlight Color Alpha").trim();
+ const old=btn.textContent;
+ btn.disabled=true;
+ btn.textContent="Compiling…";
+ $("#status").textContent="Sending letters to the Moonlight font compiler… The free service may take about a minute to wake.";
+
+ try{
+   const form=new FormData();
+   form.append("font_name",name);
+
+   for(const g of mapped){
+     const response=await fetch(g.png);
+     const blob=await response.blob();
+     const cp=g.char.codePointAt(0).toString(16).toUpperCase();
+     form.append("glyphs",blob,`U+${cp}.png`);
+     form.append("characters",g.char);
+   }
+
+   const response=await fetch("https://alpha-maker-1.onrender.com/compile",{
+     method:"POST",
+     body:form
+   });
+
+   if(!response.ok){
+     let message=`Compiler returned ${response.status}.`;
+     try{
+       const data=await response.json();
+       if(data.error)message=data.error;
+       if(data.details)message+="
+
+"+data.details;
+     }catch{}
+     throw new Error(message);
+   }
+
+   const fontBlob=await response.blob();
+   const disposition=response.headers.get("content-disposition")||"";
+   let filename=(name.replace(/[^A-Za-z0-9_-]+/g,"-")||"MoonlightColorAlpha")+".ttf";
+   const m=disposition.match(/filename="?([^";]+)"?/i);
+   if(m)filename=m[1];
+
+   const url=URL.createObjectURL(fontBlob);
+   const a=document.createElement("a");
+   a.href=url;
+   a.download=filename;
+   document.body.appendChild(a);
+   a.click();
+   a.remove();
+   setTimeout(()=>URL.revokeObjectURL(url),3000);
+   $("#status").textContent="Color font compiled successfully. Your TTF download has started.";
+ }catch(err){
+   console.error(err);
+   $("#status").textContent="Color font compilation failed.";
+   alert("Font compiler error:
+
+"+err.message);
+ }finally{
+   btn.disabled=false;
+   btn.textContent=old;
+ }
+};
 $("#saveProject").onclick=()=>{
  if(!pieces.length)return alert("Upload and detect an alphabet first.");
  const blob=new Blob([JSON.stringify({format:"MoonlightColorFontProject",version:1,glyphs:pieces})],{type:"application/json"});
