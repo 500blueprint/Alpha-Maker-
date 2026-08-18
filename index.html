@@ -47,33 +47,8 @@ label.small{font-size:13px;color:var(--muted)}input[type=range]{width:180px}.sta
     <div class="row"><button id="az" class="secondary">Assign A–Z</button><button id="az09" class="secondary">Assign A–Z + 0–9</button><button id="clear" class="secondary">Clear</button></div>
     <div id="glyphs" class="grid" style="margin-top:12px"></div>
   </section>
-
   <section class="card">
-    <h2>3. Alpha Designer — Fill Outlines With Backgrounds</h2>
-    <p class="note">Upload transparent letter outlines/masks, then upload a background or seamless pattern. The background is clipped inside each letter and the finished alpha stays transparent outside the letters.</p>
-    <div class="row">
-      <div style="flex:1;min-width:240px"><b>🔤 Letter Outlines</b><input id="outlineFiles" class="picker" type="file" accept="image/png,image/jpeg,image/webp,image/*" multiple></div>
-      <div style="flex:1;min-width:240px"><b>🖼️ Background / Pattern</b><input id="patternFile" class="picker" type="file" accept="image/png,image/jpeg,image/webp,image/*"></div>
-    </div>
-    <div class="row" style="margin-top:12px">
-      <label class="small">Pattern scale <input id="patternScale" type="range" min="20" max="400" value="100"></label>
-      <label class="small">Move X <input id="patternX" type="range" min="-100" max="100" value="0"></label>
-      <label class="small">Move Y <input id="patternY" type="range" min="-100" max="100" value="0"></label>
-      <label class="small">Rotate <input id="patternRot" type="range" min="-180" max="180" value="0"></label>
-      <label class="small">Mask threshold <input id="maskThreshold" type="range" min="1" max="254" value="18"></label>
-    </div>
-    <div class="row" style="margin-top:10px">
-      <label class="small"><input id="keepOutline" type="checkbox" checked> Keep original outline on top</label>
-      <button id="renderAlpha" class="secondary">Apply Background</button>
-      <button id="sendToFont" class="secondary">Send Finished Alpha to Font Builder</button>
-      <button id="downloadAlphaZip">Export Finished Alpha ZIP</button>
-    </div>
-    <div id="designerStatus" class="status" style="margin-top:10px">Upload your letter outlines and a background.</div>
-    <div id="designerGrid" class="grid" style="margin-top:12px"></div>
-  </section>
-
-  <section class="card">
-    <h2>4. Font Glyph Organizer</h2>
+    <h2>3. Font Glyph Organizer</h2>
     <p class="note">Build an alphabet from separate transparent PNG letters. Upload many at once, assign them automatically, replace individual letters, reorder them, or remove mistakes.</p>
     <div class="row">
       <div style="flex:1;min-width:240px"><b>➕ Add Individual PNG Letters</b><input id="multiGlyph" class="picker" type="file" accept="image/png,image/jpeg,image/webp,image/*" multiple></div>
@@ -87,15 +62,17 @@ label.small{font-size:13px;color:var(--muted)}input[type=range]{width:180px}.sta
   </section>
 
   <section class="card">
-    <h2>5. Test your mapping</h2>
+    <h2>4. Test your mapping</h2>
     <textarea id="previewText" placeholder="Type something, e.g. MOONLIGHT"></textarea>
     <canvas id="preview" width="850" height="220"></canvas>
   </section>
 
   <section class="card">
-    <h2>6. Export & Save</h2>
+    <h2>5. Export & Save</h2>
     <div class="row">
       <input id="fontName" value="Moonlight Color Alpha" aria-label="Font name" style="flex:1;min-width:210px;padding:13px;border-radius:14px;background:#0d0918;color:#fff;border:1px solid #ffffff22">
+      <button id="savePNG">Save PNG</button>
+      <button id="saveOTF">Save OTF</button>
       <button id="exportOTF">Create Color Font</button>
       <button id="exportZIP" class="secondary">Export ZIP Folder</button>
       <button id="saveProject" class="secondary">Save .MCFM Project</button>
@@ -254,85 +231,6 @@ $("#az09").onclick=()=>assign("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
 $("#clear").onclick=()=>assign("");
 
 
-let designerOutlines=[], designerPattern=null, designerFinished=[];
-function readImageFile(f){
- return new Promise((resolve,reject)=>{
-   const r=new FileReader();r.onerror=reject;r.onload=()=>{const im=new Image();im.onerror=reject;im.onload=()=>resolve({img:im,url:r.result,name:f.name});im.src=r.result};r.readAsDataURL(f)
- });
-}
-$("#outlineFiles").addEventListener("change",async e=>{
- const fs=[...(e.target.files||[])]; if(!fs.length)return;
- $("#designerStatus").textContent=`Loading ${fs.length} outline${fs.length===1?"":"s"}…`;
- designerOutlines=[];
- for(const f of fs){try{designerOutlines.push(await readImageFile(f))}catch(err){console.error(err)}}
- designerOutlines.sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true}));
- $("#designerStatus").textContent=`Loaded ${designerOutlines.length} outlines. ${designerPattern?"Ready to apply background.":"Now choose a background/pattern."}`;
- e.target.value=""; renderDesigner();
-});
-$("#patternFile").addEventListener("change",async e=>{
- const f=e.target.files&&e.target.files[0];if(!f)return;
- try{designerPattern=await readImageFile(f);$("#designerStatus").textContent="Background loaded. Apply it to the letters.";renderDesigner()}catch(err){$("#designerStatus").textContent="Could not open that background."}
- e.target.value="";
-});
-["patternScale","patternX","patternY","patternRot","maskThreshold"].forEach(id=>$("#"+id).addEventListener("input",()=>{if(designerOutlines.length&&designerPattern)renderDesigner()}));
-$("#keepOutline").addEventListener("change",()=>{if(designerOutlines.length&&designerPattern)renderDesigner()});
-$("#renderAlpha").onclick=renderDesigner;
-
-function makeFilledLetter(entry){
- const im=entry.img, max=1600, sc=Math.min(1,max/Math.max(im.width,im.height));
- const w=Math.max(1,Math.round(im.width*sc)),h=Math.max(1,Math.round(im.height*sc));
- const mask=document.createElement("canvas");mask.width=w;mask.height=h;
- const mx=mask.getContext("2d",{willReadFrequently:true});mx.drawImage(im,0,0,w,h);
- let md=mx.getImageData(0,0,w,h),d=md.data,thr=+$("#maskThreshold").value;
- // Use nontransparent pixels as the letter mask. This works best with transparent PNG outline/silhouette files.
- for(let i=0;i<d.length;i+=4){let a=d[i+3];d[i]=255;d[i+1]=255;d[i+2]=255;d[i+3]=a>=thr?255:0} mx.putImageData(md,0,0);
-
- const c=document.createElement("canvas");c.width=w;c.height=h;const x=c.getContext("2d");
- const pat=designerPattern.img, scale=+$("#patternScale").value/100;
- const fit=Math.max(w/pat.width,h/pat.height)*scale;
- const pw=pat.width*fit,ph=pat.height*fit;
- const ox=(+$("#patternX").value/100)*w,oy=(+$("#patternY").value/100)*h,rot=+$("#patternRot").value*Math.PI/180;
- x.save();x.translate(w/2+ox,h/2+oy);x.rotate(rot);
- // Tile enough copies to cover rotated canvas
- for(let yy=-ph*3;yy<=ph*3;yy+=ph)for(let xx=-pw*3;xx<=pw*3;xx+=pw)x.drawImage(pat,xx-pw/2,yy-ph/2,pw,ph);
- x.restore();
- x.globalCompositeOperation="destination-in";x.drawImage(mask,0,0);x.globalCompositeOperation="source-over";
- if($("#keepOutline").checked)x.drawImage(im,0,0,w,h);
- return {png:c.toDataURL("image/png"),w,h,name:entry.name};
-}
-function renderDesigner(){
- const grid=$("#designerGrid");grid.innerHTML="";designerFinished=[];
- if(!designerOutlines.length){$("#designerStatus").textContent="Upload your transparent letter outlines first.";return}
- if(!designerPattern){
-   designerOutlines.forEach(e=>{let d=document.createElement("div");d.className="glyph";d.innerHTML=`<img src="${e.url}"><div class="note">${esc(e.name)}</div>`;grid.appendChild(d)});
-   return;
- }
- designerFinished=designerOutlines.map(makeFilledLetter);
- designerFinished.forEach((e,i)=>{
-   let d=document.createElement("div");d.className="glyph";
-   d.innerHTML=`<img src="${e.png}"><div class="note">${esc(e.name)}</div><button class="secondary oneSave" style="margin-top:7px;padding:7px">Save PNG</button>`;
-   d.querySelector(".oneSave").onclick=()=>{let a=document.createElement("a");a.href=e.png;a.download=(e.name.replace(/\.[^.]+$/,"")||`letter-${i+1}`)+"-filled.png";a.click()};
-   grid.appendChild(d)
- });
- $("#designerStatus").textContent=`Background applied to ${designerFinished.length} letter${designerFinished.length===1?"":"s"}.`;
-}
-$("#sendToFont").onclick=()=>{
- if(!designerFinished.length)return alert("Apply a background to your letters first.");
- const chars="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
- pieces=designerFinished.map((e,i)=>({char:chars[i]||"",png:e.png,w:e.w,h:e.h}));
- render();syncBuilder();$("#designerStatus").textContent="Finished alpha sent to the Font Glyph Organizer.";
-};
-$("#downloadAlphaZip").onclick=async()=>{
- if(!designerFinished.length)return alert("Apply a background to your letters first.");
- if(typeof JSZip==="undefined")return alert("ZIP support could not load.");
- const z=new JSZip(),folder=z.folder("Finished-Alpha-PNGs");
- designerFinished.forEach((e,i)=>folder.file((e.name.replace(/\.[^.]+$/,"")||`letter-${i+1}`)+"-filled.png",e.png.split(",")[1],{base64:true}));
- folder.file("README.txt","Finished transparent alpha PNGs created with Moonlight Alpha Designer.");
- $("#designerStatus").textContent="Building finished alpha ZIP…";
- const blob=await z.generateAsync({type:"blob",compression:"DEFLATE"});
- const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="Moonlight-Finished-Alpha.zip";a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1500);
- $("#designerStatus").textContent="Finished alpha ZIP exported.";
-};
 
 function syncBuilder(){
  const g=$("#builderGrid");g.innerHTML="";
@@ -525,6 +423,64 @@ function buildOTF(fontName, mapped){
  let adj=(0xB1B0AFBA-checksum(font))>>>0;be32(font,headOffset+8,adj);
  return font
 }
+
+
+function moonlightMappedGlyphs(){
+ return pieces.filter(p=>p.char && [...p.char][0] && p.png)
+   .map(p=>({...p,char:[...p.char][0]}));
+}
+function moonlightSafeName(){
+ const name=($("#fontName").value||"Moonlight Color Alpha").trim();
+ return name.replace(/[^A-Za-z0-9_-]+/g,"-")||"Moonlight-Color-Alpha";
+}
+function moonlightDownload(blob,filename){
+ const url=URL.createObjectURL(blob);
+ const a=document.createElement("a");
+ a.href=url;a.download=filename;
+ document.body.appendChild(a);a.click();a.remove();
+ setTimeout(()=>URL.revokeObjectURL(url),2000);
+}
+
+$("#savePNG").onclick=async()=>{
+ const mapped=moonlightMappedGlyphs();
+ if(!mapped.length)return alert("Upload your alpha and assign characters first.");
+ const safe=moonlightSafeName();
+
+ if(mapped.length===1){
+   const g=mapped[0];
+   const blob=await (await fetch(g.png)).blob();
+   moonlightDownload(blob,`${safe}-${g.char}.png`);
+   $("#status").textContent="PNG saved.";
+   return;
+ }
+
+ if(typeof JSZip==="undefined")return alert("ZIP support could not load.");
+ $("#status").textContent="Building transparent PNG folder…";
+ const zip=new JSZip(),folder=zip.folder(`${safe}-PNGs`);
+ mapped.forEach((g,i)=>{
+   const cp=g.char.codePointAt(0).toString(16).toUpperCase().padStart(4,"0");
+   const label=/[A-Za-z0-9]/.test(g.char)?g.char:`U+${cp}`;
+   folder.file(`${String(i+1).padStart(2,"0")}-${label}.png`,g.png.split(",")[1],{base64:true});
+ });
+ const blob=await zip.generateAsync({type:"blob",compression:"DEFLATE",compressionOptions:{level:6}});
+ moonlightDownload(blob,`${safe}-PNGs.zip`);
+ $("#status").textContent=`Saved ${mapped.length} transparent PNG glyphs.`;
+};
+
+$("#saveOTF").onclick=()=>{
+ const mapped=moonlightMappedGlyphs();
+ if(!mapped.length)return alert("Upload your alpha and assign characters first.");
+ try{
+   const name=($("#fontName").value||"Moonlight Color Alpha").trim();
+   const bytes=buildOTF(name,mapped);
+   moonlightDownload(new Blob([bytes],{type:"font/otf"}),`${moonlightSafeName()}.otf`);
+   $("#status").textContent="OTF saved.";
+ }catch(err){
+   console.error(err);
+   $("#status").textContent="OTF export failed.";
+   alert("OTF export failed: "+err.message);
+ }
+};
 
 $("#exportZIP").onclick=async()=>{
  const mapped=pieces.filter(p=>p.char && [...p.char][0]).map(p=>({...p,char:[...p.char][0]}));
