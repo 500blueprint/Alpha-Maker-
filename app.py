@@ -2,14 +2,16 @@ import os
 import shutil
 import subprocess
 import tempfile
-import zipfile
+import base64
 from pathlib import Path
 
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 
+
 app = Flask(__name__)
 CORS(app)
+
 
 @app.get("/")
 def home():
@@ -18,9 +20,12 @@ def home():
         "service": "Moonlight Color Font Compiler"
     })
 
+
 @app.get("/health")
 def health():
-    return jsonify({"status": "healthy"})
+    return jsonify({
+        "status": "healthy"
+    })
 
 
 @app.post("/compile")
@@ -34,13 +39,12 @@ def compile_font():
         ).strip()
 
         files = request.files.getlist("glyphs")
+        characters = request.form.getlist("characters")
 
         if not files:
             return jsonify({
                 "error": "No glyph images were uploaded."
             }), 400
-
-        characters = request.form.getlist("characters")
 
         if len(characters) != len(files):
             return jsonify({
@@ -48,6 +52,7 @@ def compile_font():
             }), 400
 
         workdir = Path(tempfile.mkdtemp())
+
         source_dir = workdir / "source"
         output_dir = workdir / "output"
 
@@ -56,9 +61,8 @@ def compile_font():
 
         svg_files = []
 
-        for index, (uploaded, character) in enumerate(
-            zip(files, characters)
-        ):
+        for uploaded, character in zip(files, characters):
+
             if not character:
                 continue
 
@@ -69,16 +73,12 @@ def compile_font():
 
             uploaded.save(png_path)
 
-            svg_name = f"emoji_u{codepoint:x}.svg"
-            svg_path = source_dir / svg_name
-
-            # nanoemoji can consume SVG artwork.
-            # The PNG is embedded in an SVG wrapper.
-            import base64
-
             encoded = base64.b64encode(
                 png_path.read_bytes()
             ).decode("ascii")
+
+            svg_name = f"emoji_u{codepoint:x}.svg"
+            svg_path = source_dir / svg_name
 
             svg = f"""<svg
 xmlns="http://www.w3.org/2000/svg"
@@ -90,12 +90,19 @@ width="1000"
 height="1000"
 preserveAspectRatio="xMidYMid meet"
 href="data:image/png;base64,{encoded}"
+xlink:href="data:image/png;base64,{encoded}"
 />
 
 </svg>"""
 
-            svg_path.write_text(svg, encoding="utf-8")
-            svg_files.append(str(svg_path))
+            svg_path.write_text(
+                svg,
+                encoding="utf-8"
+            )
+
+            svg_files.append(
+                str(svg_path)
+            )
 
         if not svg_files:
             return jsonify({
@@ -120,6 +127,7 @@ color_format = "glyf_colr_1"
 ''',
             encoding="utf-8"
         )
+
         command = [
             "nanoemoji",
             "--config_file",
@@ -127,9 +135,7 @@ color_format = "glyf_colr_1"
             *svg_files
         ]
 
-        
-
-            result = subprocess.run(
+        result = subprocess.run(
             command,
             cwd=workdir,
             capture_output=True,
@@ -138,50 +144,71 @@ color_format = "glyf_colr_1"
         )
 
         if result.returncode != 0:
-            details = result.stdout or result.stderr
+
+            details = (
+                result.stdout
+                or result.stderr
+                or "Unknown nanoemoji error."
+            )
 
             return jsonify({
                 "error": "Font compiler failed.",
                 "details": details[-8000:]
             }), 500
 
-        fonts = list(output_dir.glob("*.ttf"))
+        fonts = list(
+            output_dir.glob("*.ttf")
+        )
 
         if not fonts:
-            fonts = list(workdir.rglob("*.ttf"))
+            fonts = list(
+                workdir.rglob("*.ttf")
+            )
 
         if not fonts:
             return jsonify({
-                "error": "Compiler finished but no TTF was created."
+                "error":
+                "Compiler finished but no TTF was created.",
+                "details":
+                result.stdout[-8000:]
             }), 500
 
         finished_font = fonts[0]
 
-        final_path = Path(tempfile.gettempdir()) / (
-            safe_name + ".ttf"
+        final_path = (
+            Path(tempfile.gettempdir())
+            / f"{safe_name}.ttf"
         )
 
-        shutil.copyfile(finished_font, final_path)
+        shutil.copyfile(
+            finished_font,
+            final_path
+        )
 
         return send_file(
             final_path,
             mimetype="font/ttf",
             as_attachment=True,
-            download_name=safe_name + ".ttf"
+            download_name=f"{safe_name}.ttf"
         )
 
     except subprocess.TimeoutExpired:
+
         return jsonify({
-            "error": "Font compilation timed out."
+            "error":
+            "Font compilation timed out."
         }), 504
 
     except Exception as exc:
+
         return jsonify({
             "error": str(exc)
         }), 500
 
     finally:
+
         if workdir and workdir.exists():
+
             shutil.rmtree(
                 workdir,
                 ignore_errors=True
@@ -189,7 +216,13 @@ color_format = "glyf_colr_1"
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "10000"))
+
+    port = int(
+        os.environ.get(
+            "PORT",
+            "10000"
+        )
+    )
 
     app.run(
         host="0.0.0.0",
