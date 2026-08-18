@@ -211,7 +211,48 @@ function detect(){
        last.x=Math.min(last.x,c.x);last.y=Math.min(last.y,c.y);last.x2=Math.max(last.x2,c.x+c.w);last.y2=Math.max(last.y2,c.y+c.h);
      }else groups.push({x:c.x,y:c.y,x2:c.x+c.w,y2:c.y+c.h});
    }
-   boxes.push(...groups.map(q=>({x:q.x,y:q.y,w:q.x2-q.x,h:q.y2-q.y})));
+   // Split suspiciously wide merged groups using whitespace valleys.
+   // This catches neighbors such as S + T that nearly touch, while leaving
+   // naturally irregular single letters intact.
+   for(const q of groups){
+     const gw=q.x2-q.x, gh=q.y2-q.y;
+     if(gw < typicalH*1.18){
+       boxes.push({x:q.x,y:q.y,w:gw,h:gh});
+       continue;
+     }
+
+     // Count foreground pixels in each column of this candidate group.
+     const projection=[];
+     for(let xx=q.x;xx<q.x2;xx++){
+       let n=0;
+       for(let yy=q.y;yy<q.y2;yy++) n+=fg[yy*w+xx];
+       projection.push(n);
+     }
+
+     // Find meaningful low-density valleys away from the outer edges.
+     const edgeGuard=Math.max(4,Math.floor(gw*.18));
+     const valleyLimit=Math.max(1,Math.floor(gh*.035));
+     let best=-1,bestValue=Infinity;
+     for(let i=edgeGuard;i<projection.length-edgeGuard;i++){
+       const v=projection[i];
+       if(v<=valleyLimit && v<bestValue){
+         // Require some artwork on both sides so decorations do not create
+         // accidental cuts at the edge of one letter.
+         let left=0,right=0;
+         for(let j=Math.max(0,i-Math.floor(gw*.16));j<i;j++)left+=projection[j];
+         for(let j=i+1;j<=Math.min(projection.length-1,i+Math.floor(gw*.16));j++)right+=projection[j];
+         if(left>gh*.15 && right>gh*.15){best=i;bestValue=v}
+       }
+     }
+
+     if(best>0){
+       const splitX=q.x+best;
+       boxes.push({x:q.x,y:q.y,w:splitX-q.x,h:gh});
+       boxes.push({x:splitX+1,y:q.y,w:q.x2-(splitX+1),h:gh});
+     }else{
+       boxes.push({x:q.x,y:q.y,w:gw,h:gh});
+     }
+   }
  }
 
  boxes=boxes.filter(q=>q.w>3&&q.h>3);
