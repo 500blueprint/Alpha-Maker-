@@ -16,18 +16,31 @@ from fontTools.ttLib.tables.sbixStrike import Strike
 
 # ============================================================
 # MOONLIGHT COLOR FONT COMPILER
-# 5000x5000 TRANSPARENT PNG ALPHA -> TYPEABLE COLOR TTF
+# Server-side TTF + OTF export
+# 5000 x 5000 transparent PNG glyph workflow
 # ============================================================
 
 app = Flask(__name__)
 CORS(app)
 
-# Allow large alphabet uploads.
 app.config["MAX_CONTENT_LENGTH"] = 250 * 1024 * 1024
+
+VERSION = "5.0-server-fonts"
+
+SOURCE_SIZE = 5000
+BITMAP_SIZE = 512
+
+UNITS_PER_EM = 1000
+ASCENT = 850
+DESCENT = -150
+LINE_GAP = 100
+
+GLYPH_ADVANCE = 1000
+SPACE_ADVANCE = 500
 
 
 # ============================================================
-# ROUTES
+# STATUS
 # ============================================================
 
 @app.get("/")
@@ -35,7 +48,8 @@ def home():
     return jsonify({
         "status": "ok",
         "service": "Moonlight Color Font Compiler",
-        "version": "4.0-5000-canvas"
+        "version": VERSION,
+        "formats": ["ttf", "otf"]
     })
 
 
@@ -43,7 +57,7 @@ def home():
 def health():
     return jsonify({
         "status": "healthy",
-        "version": "4.0-5000-canvas"
+        "version": VERSION
     })
 
 
@@ -68,17 +82,19 @@ def make_empty_glyph():
 
 def prepare_png(uploaded_file):
     """
-    Prepare a Moonlight PNG for the sbix color font.
+    Preserve the complete transparent square.
 
-    STANDARD:
-    - Source artwork should be 5000 x 5000 px.
-    - Transparent background.
-    - Full square canvas is preserved.
-    - Transparent margins are NEVER cropped.
-    - Every glyph receives identical scaling.
+    IMPORTANT:
+    - Do NOT crop artwork.
+    - Do NOT trim transparent margins.
+    - Do NOT resize based on visible artwork.
+    - Every glyph receives exactly the same transformation.
 
-    The full 5000 x 5000 canvas is reduced to a 512 x 512
-    bitmap for the font's sbix strike.
+    Standard Moonlight source:
+        5000 x 5000 transparent PNG
+
+    Font bitmap:
+        complete canvas -> 512 x 512
     """
 
     raw = uploaded_file.read()
@@ -98,10 +114,6 @@ def prepare_png(uploaded_file):
             f"is not a valid image: {exc}"
         )
 
-    # --------------------------------------------------------
-    # CHECK FOR VISIBLE ARTWORK
-    # --------------------------------------------------------
-
     alpha = image.getchannel("A")
 
     if alpha.getbbox() is None:
@@ -113,79 +125,43 @@ def prepare_png(uploaded_file):
         )
 
     # --------------------------------------------------------
-    # STANDARD MOONLIGHT SOURCE CANVAS
-    # --------------------------------------------------------
-
-    SOURCE_SIZE = 5000
-    FONT_BITMAP_SIZE = 512
-
-    # --------------------------------------------------------
-    # IMPORTANT:
-    #
-    # DO NOT CROP TRANSPARENT SPACE.
-    #
-    # If the uploaded image is already 5000x5000, we leave
-    # its entire canvas exactly as supplied.
+    # STANDARDIZE THE COMPLETE CANVAS
     # --------------------------------------------------------
 
     if image.size != (SOURCE_SIZE, SOURCE_SIZE):
 
         normalized = Image.new(
             "RGBA",
-            (
-                SOURCE_SIZE,
-                SOURCE_SIZE
-            ),
-            (
-                0,
-                0,
-                0,
-                0
-            )
+            (SOURCE_SIZE, SOURCE_SIZE),
+            (0, 0, 0, 0)
         )
 
-        # Fit the COMPLETE source image into the square.
-        # Never stretch it.
         scale = min(
             SOURCE_SIZE / max(image.width, 1),
             SOURCE_SIZE / max(image.height, 1)
         )
 
-        new_width = max(
+        width = max(
             1,
             round(image.width * scale)
         )
 
-        new_height = max(
+        height = max(
             1,
             round(image.height * scale)
         )
 
         resized = image.resize(
-            (
-                new_width,
-                new_height
-            ),
+            (width, height),
             Image.Resampling.LANCZOS
         )
 
-        # Center complete source canvas.
-        x = (
-            SOURCE_SIZE -
-            new_width
-        ) // 2
-
-        y = (
-            SOURCE_SIZE -
-            new_height
-        ) // 2
+        x = (SOURCE_SIZE - width) // 2
+        y = (SOURCE_SIZE - height) // 2
 
         normalized.alpha_composite(
             resized,
-            (
-                x,
-                y
-            )
+            (x, y)
         )
 
         resized.close()
@@ -194,570 +170,552 @@ def prepare_png(uploaded_file):
         image = normalized
 
     # --------------------------------------------------------
-    # FONT BITMAP
-    #
-    # Scale the COMPLETE square canvas.
-    #
-    # A, B, C, etc. therefore all receive the exact same
-    # transformation.
+    # DOWNSAMPLE COMPLETE 5000 x 5000 CANVAS
     # --------------------------------------------------------
 
-    font_image = image.resize(
-        (
-            FONT_BITMAP_SIZE,
-            FONT_BITMAP_SIZE
-        ),
+    bitmap = image.resize(
+        (BITMAP_SIZE, BITMAP_SIZE),
         Image.Resampling.LANCZOS
     )
 
     output = io.BytesIO()
 
-    font_image.save(
+    bitmap.save(
         output,
         format="PNG",
         compress_level=6
     )
 
-    png_bytes = output.getvalue()
+    result = output.getvalue()
 
     output.close()
-    font_image.close()
+    bitmap.close()
     image.close()
 
-    return png_bytes
+    return result
+
+
+def receive_glyphs():
+    """
+    Read glyph uploads and their explicit Unicode assignments.
+
+    The browser sends:
+        glyphs=A.png
+        characters=A
+
+    We map:
+        A -> U+0041
+        B -> U+0042
+        etc.
+
+    No filename guessing is used.
+    """
+
+    font_name = request.form.get(
+        "font_name",
+        "Moonlight Color Alpha"
+    ).strip()
+
+    if not font_name:
+        font_name = "Moonlight Color Alpha"
+
+    files = request.files.getlist("glyphs")
+    characters = request.form.getlist("characters")
+
+    if not files:
+        raise ValueError(
+            "No glyph PNG files were uploaded."
+        )
+
+    if not characters:
+        raise ValueError(
+            "No character assignments were supplied."
+        )
+
+    if len(files) != len(characters):
+        raise ValueError(
+            f"Received {len(files)} images but "
+            f"{len(characters)} character assignments."
+        )
+
+    glyph_data = []
+    used_codepoints = set()
+
+    for uploaded, assignment in zip(
+        files,
+        characters
+    ):
+
+        assignment = (
+            assignment or ""
+        ).strip()
+
+        if not assignment:
+            continue
+
+        # Actual Unicode character from the mapping box.
+        char = next(iter(assignment))
+
+        codepoint = ord(char)
+
+        if codepoint == 32:
+            continue
+
+        if codepoint in used_codepoints:
+            continue
+
+        used_codepoints.add(codepoint)
+
+        glyph_data.append({
+            "character": char,
+            "codepoint": codepoint,
+            "glyph_name": f"uni{codepoint:04X}",
+            "png": prepare_png(uploaded)
+        })
+
+    if not glyph_data:
+        raise ValueError(
+            "No valid mapped character PNGs were supplied."
+        )
+
+    return font_name, glyph_data
 
 
 # ============================================================
-# COMPILE FONT
+# BUILD COLOR FONT
 # ============================================================
 
-@app.post("/compile")
-def compile_font():
+def build_color_font(
+    font_name,
+    glyph_data,
+    extension
+):
+
+    safe_name = clean_font_name(font_name)
+
+    workdir = Path(
+        tempfile.mkdtemp(
+            prefix="moonlight_font_"
+        )
+    )
+
+    output_path = (
+        workdir /
+        f"{safe_name}.{extension}"
+    )
+
+    # --------------------------------------------------------
+    # GLYPH ORDER
+    # --------------------------------------------------------
+
+    glyph_order = [
+        ".notdef",
+        "space"
+    ]
+
+    glyph_order.extend(
+        item["glyph_name"]
+        for item in glyph_data
+    )
+
+    # --------------------------------------------------------
+    # CHARACTER MAP
+    # --------------------------------------------------------
+
+    character_map = {
+        32: "space"
+    }
+
+    for item in glyph_data:
+        character_map[
+            item["codepoint"]
+        ] = item["glyph_name"]
+
+    # --------------------------------------------------------
+    # TRUE TYPE SHELL
+    #
+    # sbix is a TrueType/OpenType bitmap-color mechanism.
+    # Both download routes use this same tested internal font.
+    # --------------------------------------------------------
+
+    fb = FontBuilder(
+        UNITS_PER_EM,
+        isTTF=True
+    )
+
+    fb.setupGlyphOrder(
+        glyph_order
+    )
+
+    fb.setupCharacterMap(
+        character_map
+    )
+
+    glyphs = {
+        name: make_empty_glyph()
+        for name in glyph_order
+    }
+
+    fb.setupGlyf(
+        glyphs
+    )
+
+    # --------------------------------------------------------
+    # FIXED METRICS
+    #
+    # No glyph-specific sizing.
+    # --------------------------------------------------------
+
+    metrics = {
+        ".notdef": (
+            GLYPH_ADVANCE,
+            0
+        ),
+
+        "space": (
+            SPACE_ADVANCE,
+            0
+        )
+    }
+
+    for item in glyph_data:
+
+        metrics[
+            item["glyph_name"]
+        ] = (
+            GLYPH_ADVANCE,
+            0
+        )
+
+    fb.setupHorizontalMetrics(
+        metrics
+    )
+
+    fb.setupHorizontalHeader(
+        ascent=ASCENT,
+        descent=DESCENT,
+        lineGap=LINE_GAP
+    )
+
+    # --------------------------------------------------------
+    # FONT NAME TABLE
+    # --------------------------------------------------------
+
+    fb.setupNameTable({
+        "familyName": font_name,
+        "styleName": "Regular",
+        "uniqueFontIdentifier":
+            f"{font_name} Moonlight {VERSION}",
+        "fullName": font_name,
+        "psName": safe_name,
+        "version": "Version 5.000"
+    })
+
+    # --------------------------------------------------------
+    # OS/2
+    # --------------------------------------------------------
+
+    fb.setupOS2(
+        sTypoAscender=ASCENT,
+        sTypoDescender=DESCENT,
+        sTypoLineGap=LINE_GAP,
+
+        usWinAscent=1000,
+        usWinDescent=200,
+
+        sxHeight=500,
+        sCapHeight=700
+    )
+
+    fb.setupPost()
+    fb.setupMaxp()
+
+    # --------------------------------------------------------
+    # SAVE BASE FONT
+    # --------------------------------------------------------
+
+    fb.save(
+        output_path
+    )
+
+    # ========================================================
+    # SBIX COLOR PNG TABLE
+    # ========================================================
+
+    font = TTFont(
+        output_path
+    )
+
+    sbix = newTable(
+        "sbix"
+    )
+
+    sbix.version = 1
+    sbix.flags = 1
+    sbix.strikes = {}
+
+    strike = Strike(
+        ppem=BITMAP_SIZE,
+        resolution=72
+    )
+
+    strike.glyphs = {}
+
+    strike.glyphs[".notdef"] = SbixGlyph(
+        glyphName=".notdef"
+    )
+
+    strike.glyphs["space"] = SbixGlyph(
+        glyphName="space"
+    )
+
+    # --------------------------------------------------------
+    # IDENTICAL PLACEMENT FOR EVERY LETTER
+    # --------------------------------------------------------
+
+    for item in glyph_data:
+
+        strike.glyphs[
+            item["glyph_name"]
+        ] = SbixGlyph(
+
+            glyphName=item["glyph_name"],
+
+            graphicType="png ",
+
+            imageData=item["png"],
+
+            originOffsetX=0,
+
+            originOffsetY=0
+        )
+
+    sbix.strikes[
+        BITMAP_SIZE
+    ] = strike
+
+    font["sbix"] = sbix
+
+    font.save(
+        output_path
+    )
+
+    font.close()
+
+    # ========================================================
+    # VERIFY FONT
+    # ========================================================
+
+    verify = TTFont(
+        output_path
+    )
+
+    required_tables = {
+        "cmap",
+        "glyf",
+        "head",
+        "hhea",
+        "hmtx",
+        "maxp",
+        "name",
+        "OS/2",
+        "post",
+        "sbix"
+    }
+
+    missing_tables = [
+        table
+        for table in required_tables
+        if table not in verify
+    ]
+
+    cmap = (
+        verify.getBestCmap()
+        or {}
+    )
+
+    missing_characters = [
+        item["codepoint"]
+        for item in glyph_data
+        if item["codepoint"] not in cmap
+    ]
+
+    verify.close()
+
+    if missing_tables:
+
+        raise ValueError(
+            "Generated font is missing tables: "
+            + ", ".join(missing_tables)
+        )
+
+    if missing_characters:
+
+        readable = ", ".join(
+            f"U+{codepoint:04X}"
+            for codepoint in missing_characters
+        )
+
+        raise ValueError(
+            "Character mapping verification failed: "
+            + readable
+        )
+
+    if not output_path.exists():
+
+        raise ValueError(
+            "Font output file was not created."
+        )
+
+    if output_path.stat().st_size < 1000:
+
+        raise ValueError(
+            "Generated font appears invalid."
+        )
+
+    return output_path
+
+
+# ============================================================
+# TTF
+# ============================================================
+
+@app.post("/compile/ttf")
+def compile_ttf():
 
     try:
 
-        # ----------------------------------------------------
-        # RECEIVE FORM DATA
-        # ----------------------------------------------------
-
-        font_name = request.form.get(
-            "font_name",
-            "Moonlight Color Alpha"
-        ).strip()
-
-        if not font_name:
-            font_name = "Moonlight Color Alpha"
-
-        files = request.files.getlist(
-            "glyphs"
+        font_name, glyph_data = (
+            receive_glyphs()
         )
 
-        characters = request.form.getlist(
-            "characters"
+        output_path = build_color_font(
+            font_name,
+            glyph_data,
+            "ttf"
         )
-
-        # ----------------------------------------------------
-        # VALIDATE UPLOAD
-        # ----------------------------------------------------
-
-        if not files:
-            return jsonify({
-                "error":
-                    "No glyph PNG files were uploaded."
-            }), 400
-
-        if not characters:
-            return jsonify({
-                "error":
-                    "No character assignments were supplied."
-            }), 400
-
-        if len(files) != len(characters):
-            return jsonify({
-                "error":
-                    f"Received {len(files)} images but "
-                    f"{len(characters)} character assignments."
-            }), 400
-
-        # ----------------------------------------------------
-        # TEMPORARY OUTPUT FOLDER
-        # ----------------------------------------------------
-
-        workdir = Path(
-            tempfile.mkdtemp(
-                prefix="moonlight_font_"
-            )
-        )
-
-        safe_name = clean_font_name(
-            font_name
-        )
-
-        output_path = (
-            workdir /
-            f"{safe_name}.ttf"
-        )
-
-        # ----------------------------------------------------
-        # GLYPH SETUP
-        # ----------------------------------------------------
-
-        glyph_order = [
-            ".notdef",
-            "space"
-        ]
-
-        # Space maps to U+0020.
-        character_map = {
-            32: "space"
-        }
-
-        png_glyphs = {}
-
-        used_codepoints = set()
-
-        # ----------------------------------------------------
-        # PROCESS EACH CHARACTER
-        # ----------------------------------------------------
-
-        for uploaded, character in zip(
-            files,
-            characters
-        ):
-
-            character = (
-                character or ""
-            ).strip()
-
-            if not character:
-                continue
-
-            # Use the actual first Unicode character assigned
-            # by the Moonlight front-end.
-            char = next(
-                iter(character)
-            )
-
-            codepoint = ord(
-                char
-            )
-
-            # Prevent duplicate mappings.
-            if codepoint in used_codepoints:
-                continue
-
-            used_codepoints.add(
-                codepoint
-            )
-
-            glyph_name = (
-                f"uni{codepoint:04X}"
-            )
-
-            png_data = prepare_png(
-                uploaded
-            )
-
-            glyph_order.append(
-                glyph_name
-            )
-
-            # THIS is what makes the font typeable.
-            #
-            # Example:
-            # A = U+0041 -> uni0041
-            # B = U+0042 -> uni0042
-            # C = U+0043 -> uni0043
-            character_map[
-                codepoint
-            ] = glyph_name
-
-            png_glyphs[
-                glyph_name
-            ] = png_data
-
-        if not png_glyphs:
-            return jsonify({
-                "error":
-                    "No valid character PNGs were supplied."
-            }), 400
-
-        # ====================================================
-        # FONT METRICS
-        # ====================================================
-
-        UNITS_PER_EM = 1000
-
-        ASCENT = 850
-        DESCENT = -150
-
-        # Every letter occupies the same horizontal cell.
-        GLYPH_ADVANCE = 1000
-
-        SPACE_ADVANCE = 500
-
-        # ====================================================
-        # BUILD TRUETYPE SHELL
-        # ====================================================
-
-        fb = FontBuilder(
-            UNITS_PER_EM,
-            isTTF=True
-        )
-
-        # ----------------------------------------------------
-        # GLYPH ORDER
-        # ----------------------------------------------------
-
-        fb.setupGlyphOrder(
-            glyph_order
-        )
-
-        # ----------------------------------------------------
-        # UNICODE CHARACTER MAP
-        #
-        # This cmap is what connects keyboard characters
-        # to the correct Moonlight PNG glyph.
-        # ----------------------------------------------------
-
-        fb.setupCharacterMap(
-            character_map
-        )
-
-        # ----------------------------------------------------
-        # EMPTY GLYF OUTLINES
-        #
-        # Visible artwork comes from sbix PNGs.
-        # ----------------------------------------------------
-
-        glyphs = {
-            glyph_name: make_empty_glyph()
-            for glyph_name in glyph_order
-        }
-
-        fb.setupGlyf(
-            glyphs
-        )
-
-        # ----------------------------------------------------
-        # HORIZONTAL METRICS
-        # ----------------------------------------------------
-
-        metrics = {
-            ".notdef": (
-                GLYPH_ADVANCE,
-                0
-            ),
-
-            "space": (
-                SPACE_ADVANCE,
-                0
-            )
-        }
-
-        for glyph_name in png_glyphs:
-
-            metrics[
-                glyph_name
-            ] = (
-                GLYPH_ADVANCE,
-                0
-            )
-
-        fb.setupHorizontalMetrics(
-            metrics
-        )
-
-        # ----------------------------------------------------
-        # HORIZONTAL HEADER
-        # ----------------------------------------------------
-
-        fb.setupHorizontalHeader(
-            ascent=ASCENT,
-            descent=DESCENT,
-            lineGap=100
-        )
-
-        # ----------------------------------------------------
-        # FONT NAMES
-        # ----------------------------------------------------
-
-        fb.setupNameTable({
-
-            "familyName":
-                font_name,
-
-            "styleName":
-                "Regular",
-
-            "uniqueFontIdentifier":
-                f"{font_name} Moonlight V4",
-
-            "fullName":
-                font_name,
-
-            "psName":
-                safe_name,
-
-            "version":
-                "Version 4.000"
-        })
-
-        # ----------------------------------------------------
-        # OS/2
-        # ----------------------------------------------------
-
-        fb.setupOS2(
-
-            sTypoAscender=ASCENT,
-
-            sTypoDescender=DESCENT,
-
-            sTypoLineGap=100,
-
-            usWinAscent=1000,
-
-            usWinDescent=200,
-
-            sxHeight=500,
-
-            sCapHeight=700
-        )
-
-        fb.setupPost()
-
-        fb.setupMaxp()
-
-        # ----------------------------------------------------
-        # SAVE BASE TTF
-        # ----------------------------------------------------
-
-        fb.save(
-            output_path
-        )
-
-        # ====================================================
-        # ADD COLOR PNG SBIX TABLE
-        # ====================================================
-
-        font = TTFont(
-            output_path
-        )
-
-        sbix = newTable(
-            "sbix"
-        )
-
-        sbix.version = 1
-        sbix.flags = 1
-        sbix.strikes = {}
-
-        # ----------------------------------------------------
-        # BITMAP STRIKE
-        #
-        # Every source PNG has been uniformly converted from
-        # its full 5000x5000 canvas to 512x512.
-        # ----------------------------------------------------
-
-        strike = Strike(
-            ppem=512,
-            resolution=72
-        )
-
-        strike.glyphs = {}
-
-        # ----------------------------------------------------
-        # REQUIRED EMPTY GLYPHS
-        # ----------------------------------------------------
-
-        strike.glyphs[
-            ".notdef"
-        ] = SbixGlyph(
-            glyphName=".notdef"
-        )
-
-        strike.glyphs[
-            "space"
-        ] = SbixGlyph(
-            glyphName="space"
-        )
-
-        # ----------------------------------------------------
-        # ADD PNG LETTERS
-        #
-        # All glyphs receive IDENTICAL origin positioning.
-        # No letter-specific calculations.
-        # ----------------------------------------------------
-
-        for glyph_name, png_data in (
-            png_glyphs.items()
-        ):
-
-            strike.glyphs[
-                glyph_name
-            ] = SbixGlyph(
-
-                glyphName=glyph_name,
-
-                graphicType="png ",
-
-                imageData=png_data,
-
-                originOffsetX=0,
-
-                originOffsetY=0
-            )
-
-        sbix.strikes[
-            512
-        ] = strike
-
-        font["sbix"] = sbix
-
-        # ----------------------------------------------------
-        # SAVE FINAL TTF
-        # ----------------------------------------------------
-
-        font.save(
-            output_path
-        )
-
-        font.close()
-
-        # ====================================================
-        # VERIFY GENERATED FONT
-        # ====================================================
-
-        test_font = TTFont(
-            output_path
-        )
-
-        required_tables = {
-            "cmap",
-            "glyf",
-            "head",
-            "hhea",
-            "hmtx",
-            "maxp",
-            "name",
-            "OS/2",
-            "post",
-            "sbix"
-        }
-
-        missing = [
-            table
-            for table in required_tables
-            if table not in test_font
-        ]
-
-        cmap = (
-            test_font.getBestCmap()
-            or {}
-        )
-
-        # Make sure every uploaded character made it into
-        # the final cmap.
-        missing_mappings = [
-            cp
-            for cp in used_codepoints
-            if cp not in cmap
-        ]
-
-        test_font.close()
-
-        # ----------------------------------------------------
-        # TABLE VALIDATION
-        # ----------------------------------------------------
-
-        if missing:
-
-            return jsonify({
-
-                "error":
-                    "Font is missing required tables.",
-
-                "details":
-                    ", ".join(missing)
-
-            }), 500
-
-        # ----------------------------------------------------
-        # CHARACTER MAP VALIDATION
-        # ----------------------------------------------------
-
-        if missing_mappings:
-
-            readable = ", ".join(
-                f"U+{cp:04X}"
-                for cp in missing_mappings
-            )
-
-            return jsonify({
-
-                "error":
-                    "Some characters were not mapped.",
-
-                "details":
-                    readable
-
-            }), 500
-
-        # ----------------------------------------------------
-        # OUTPUT VALIDATION
-        # ----------------------------------------------------
-
-        if not output_path.exists():
-
-            return jsonify({
-                "error":
-                    "TTF output file was not created."
-            }), 500
-
-        if output_path.stat().st_size < 1000:
-
-            return jsonify({
-                "error":
-                    "Generated TTF appears invalid."
-            }), 500
-
-        # ====================================================
-        # DOWNLOAD
-        # ====================================================
 
         return send_file(
-
             output_path,
-
             mimetype="font/ttf",
-
             as_attachment=True,
-
-            download_name=(
-                f"{safe_name}.ttf"
-            ),
-
+            download_name=output_path.name,
             max_age=0
         )
 
-    # ========================================================
-    # ERROR HANDLER
-    # ========================================================
+    except ValueError as exc:
+
+        return jsonify({
+            "error": str(exc)
+        }), 400
 
     except Exception as exc:
 
         app.logger.exception(
-            "Moonlight font compilation failed"
+            "Moonlight TTF compilation failed"
         )
 
         return jsonify({
-
             "error":
-                "Color font compilation failed.",
-
+                "TTF compilation failed.",
             "details":
                 str(exc)
+        }), 500
 
+
+# ============================================================
+# OTF
+# ============================================================
+
+@app.post("/compile/otf")
+def compile_otf():
+
+    try:
+
+        font_name, glyph_data = (
+            receive_glyphs()
+        )
+
+        output_path = build_color_font(
+            font_name,
+            glyph_data,
+            "otf"
+        )
+
+        return send_file(
+            output_path,
+            mimetype="font/otf",
+            as_attachment=True,
+            download_name=output_path.name,
+            max_age=0
+        )
+
+    except ValueError as exc:
+
+        return jsonify({
+            "error": str(exc)
+        }), 400
+
+    except Exception as exc:
+
+        app.logger.exception(
+            "Moonlight OTF compilation failed"
+        )
+
+        return jsonify({
+            "error":
+                "OTF compilation failed.",
+            "details":
+                str(exc)
+        }), 500
+
+
+# ============================================================
+# OLD ROUTE COMPATIBILITY
+#
+# Your older index versions can still call /compile.
+# ============================================================
+
+@app.post("/compile")
+def compile_legacy():
+
+    try:
+
+        font_name, glyph_data = (
+            receive_glyphs()
+        )
+
+        output_path = build_color_font(
+            font_name,
+            glyph_data,
+            "ttf"
+        )
+
+        return send_file(
+            output_path,
+            mimetype="font/ttf",
+            as_attachment=True,
+            download_name=output_path.name,
+            max_age=0
+        )
+
+    except ValueError as exc:
+
+        return jsonify({
+            "error": str(exc)
+        }), 400
+
+    except Exception as exc:
+
+        app.logger.exception(
+            "Moonlight legacy compilation failed"
+        )
+
+        return jsonify({
+            "error":
+                "Font compilation failed.",
+            "details":
+                str(exc)
         }), 500
 
 
