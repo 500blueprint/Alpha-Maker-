@@ -1,23 +1,32 @@
+import io
 import os
 import shutil
-import subprocess
 import tempfile
-import base64
 from pathlib import Path
 
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
+from PIL import Image
+
+from fontTools.fontBuilder import FontBuilder
+from fontTools.ttLib import TTFont, newTable
+from fontTools.ttLib.tables._g_l_y_f import Glyph
+from fontTools.ttLib.tables.sbixGlyph import Glyph as SbixGlyph
+from fontTools.ttLib.tables.sbixStrike import Strike
 
 
 app = Flask(__name__)
 CORS(app)
+
+# Allow large alphabet uploads.
+app.config["MAX_CONTENT_LENGTH"] = 250 * 1024 * 1024
 
 
 @app.get("/")
 def home():
     return jsonify({
         "status": "ok",
-        "service": "Moonlight Color Font Compiler"
+        "service": "Moonlight PNG Color Font Compiler"
     })
 
 
@@ -26,6 +35,96 @@ def health():
     return jsonify({
         "status": "healthy"
     })
+
+
+def clean_font_name(name):
+    cleaned = "".join(
+        c for c in name
+        if c.isalnum() or c in ("-", "_")
+    )
+
+    return cleaned or "MoonlightColorAlpha"
+
+
+def make_empty_glyph():
+    glyph = Glyph()
+    glyph.numberOfContours = 0
+    return glyph
+
+
+def prepare_png(uploaded_file):
+    """
+    Normalize each uploaded glyph into a transparent RGBA PNG.
+
+    The artwork itself is preserved. We only trim unused transparent
+    space and place it on a predictable transparent canvas.
+    """
+
+    raw = uploaded_file.read()
+
+    if not raw:
+        raise ValueError(
+            f"{uploaded_file.filename or 'Uploaded file'} is empty."
+        )
+
+    try:
+        image = Image.open(io.BytesIO(raw)).convert("RGBA")
+    except Exception as exc:
+        raise ValueError(
+            f"{uploaded_file.filename or 'Uploaded file'} "
+            f"is not a valid PNG/image: {exc}"
+        )
+
+    alpha = image.getchannel("A")
+    bbox = alpha.getbbox()
+
+    if bbox:
+        image = image.crop(bbox)
+
+    # Keep the glyph reasonably sized inside the font.
+    max_dimension = 900
+
+    scale = min(
+        max_dimension / max(image.width, 1),
+        max_dimension / max(image.height, 1),
+        1.0
+    )
+
+    if scale < 1:
+        image = image.resize(
+            (
+                max(1, round(image.width * scale)),
+                max(1, round(image.height * scale))
+            ),
+            Image.Resampling.LANCZOS
+        )
+
+    # Transparent padding prevents artwork from touching the edge.
+    padding = 40
+
+    canvas = Image.new(
+        "RGBA",
+        (
+            image.width + padding * 2,
+            image.height + padding * 2
+        ),
+        (0, 0, 0, 0)
+    )
+
+    canvas.alpha_composite(
+        image,
+        (padding, padding)
+    )
+
+    output = io.BytesIO()
+
+    canvas.save(
+        output,
+        format="PNG",
+        optimize=True
+    )
+
+    return output.getvalue(), canvas.width, canvas.height
 
 
 @app.post("/compile")
@@ -38,181 +137,255 @@ def compile_font():
             "Moonlight Color Alpha"
         ).strip()
 
+        if not font_name:
+            font_name = "Moonlight Color Alpha"
+
         files = request.files.getlist("glyphs")
         characters = request.form.getlist("characters")
 
         if not files:
             return jsonify({
-                "error": "No glyph images were uploaded."
+                "error": "No glyph PNG files were uploaded."
             }), 400
 
-        if len(characters) != len(files):
+        if not characters:
             return jsonify({
-                "error": "Each PNG needs a character assignment."
+                "error": "No character assignments were supplied."
+            }), 400
+
+        if len(files) != len(characters):
+            return jsonify({
+                "error":
+                    f"Received {len(files)} images but "
+                    f"{len(characters)} character assignments."
             }), 400
 
         workdir = Path(tempfile.mkdtemp())
 
-        source_dir = workdir / "source"
-        output_dir = workdir / "output"
+        safe_name = clean_font_name(font_name)
 
-        source_dir.mkdir()
-        output_dir.mkdir()
+        output_path = workdir / f"{safe_name}.ttf"
 
-        svg_files = []
+        glyph_order = [".notdef", "space"]
+
+        character_map = {}
+        png_glyphs = {}
+
+        used_codepoints = set()
 
         for uploaded, character in zip(files, characters):
+
+            character = (character or "").strip()
 
             if not character:
                 continue
 
-            codepoint = ord(character[0])
+            char = character[0]
+            codepoint = ord(char)
 
-            png_name = f"emoji_u{codepoint:x}.png"
-            png_path = source_dir / png_name
+            # Avoid duplicate character mappings.
+            if codepoint in used_codepoints:
+                continue
 
-            uploaded.save(png_path)
+            used_codepoints.add(codepoint)
 
-            encoded = base64.b64encode(
-                png_path.read_bytes()
-            ).decode("ascii")
+            glyph_name = f"uni{codepoint:04X}"
 
-            svg_name = f"emoji_u{codepoint:x}.svg"
-            svg_path = source_dir / svg_name
+            png_data, width, height = prepare_png(uploaded)
 
-            svg = f"""<svg
-xmlns="http://www.w3.org/2000/svg"
-xmlns:xlink="http://www.w3.org/1999/xlink"
-viewBox="0 0 1000 1000">
+            glyph_order.append(glyph_name)
 
-<image
-width="1000"
-height="1000"
-preserveAspectRatio="xMidYMid meet"
-href="data:image/png;base64,{encoded}"
-xlink:href="data:image/png;base64,{encoded}"
-/>
+            character_map[codepoint] = glyph_name
 
-</svg>"""
+            png_glyphs[glyph_name] = {
+                "png": png_data,
+                "width": width,
+                "height": height
+            }
 
-            svg_path.write_text(
-                svg,
-                encoding="utf-8"
-            )
-
-            svg_files.append(
-                str(svg_path)
-            )
-
-        if not svg_files:
+        if not png_glyphs:
             return jsonify({
-                "error": "No valid characters were supplied."
+                "error": "No valid character PNGs were supplied."
             }), 400
 
-        safe_name = "".join(
-            c for c in font_name
-            if c.isalnum() or c in ("-", "_")
+        # ----------------------------------------------------------
+        # Build a normal TrueType shell.
+        # The visible artwork is stored in the sbix color table.
+        # ----------------------------------------------------------
+
+        units_per_em = 1000
+
+        fb = FontBuilder(
+            units_per_em,
+            isTTF=True
         )
 
-        if not safe_name:
-            safe_name = "MoonlightColorAlpha"
+        fb.setupGlyphOrder(glyph_order)
 
-        config = workdir / "config.toml"
+        fb.setupCharacterMap(character_map)
 
-        config.write_text(
-            f'''
-family = "{font_name}"
-output_file = "{output_dir / (safe_name + ".ttf")}"
-color_format = "glyf_colr_1"
-''',
-            encoding="utf-8"
+        glyphs = {
+            glyph_name: make_empty_glyph()
+            for glyph_name in glyph_order
+        }
+
+        fb.setupGlyf(glyphs)
+
+        metrics = {}
+
+        metrics[".notdef"] = (1000, 0)
+        metrics["space"] = (500, 0)
+
+        for glyph_name, data in png_glyphs.items():
+
+            # Width follows the original artwork proportions.
+            advance_width = int(
+                max(
+                    300,
+                    min(
+                        1400,
+                        1000 * data["width"] /
+                        max(data["height"], 1)
+                    )
+                )
+            )
+
+            metrics[glyph_name] = (
+                advance_width,
+                0
+            )
+
+        fb.setupHorizontalMetrics(metrics)
+
+        fb.setupHorizontalHeader(
+            ascent=900,
+            descent=-100
         )
 
-        command = [
-            "nanoemoji",
-            "--config_file",
-            str(config),
-            *svg_files
+        fb.setupNameTable({
+            "familyName": font_name,
+            "styleName": "Regular",
+            "uniqueFontIdentifier":
+                f"{font_name} Moonlight Color",
+            "fullName": font_name,
+            "psName": safe_name,
+            "version": "Version 1.000"
+        })
+
+        fb.setupOS2(
+            sTypoAscender=900,
+            sTypoDescender=-100,
+            usWinAscent=1000,
+            usWinDescent=200
+        )
+
+        fb.setupPost()
+
+        fb.setupMaxp()
+
+        fb.save(output_path)
+
+        # ----------------------------------------------------------
+        # Add sbix PNG color glyph table.
+        # ----------------------------------------------------------
+
+        font = TTFont(output_path)
+
+        sbix = newTable("sbix")
+
+        sbix.version = 1
+        sbix.flags = 1
+        sbix.strikes = {}
+
+        strike = Strike(
+            ppem=128,
+            resolution=72
+        )
+
+        strike.glyphs = {}
+
+        # Required empty glyphs.
+        strike.glyphs[".notdef"] = SbixGlyph(
+            glyphName=".notdef"
+        )
+
+        strike.glyphs["space"] = SbixGlyph(
+            glyphName="space"
+        )
+
+        for glyph_name, data in png_glyphs.items():
+
+            glyph = SbixGlyph(
+                glyphName=glyph_name,
+                graphicType="png ",
+                imageData=data["png"],
+                originOffsetX=0,
+                originOffsetY=0
+            )
+
+            strike.glyphs[glyph_name] = glyph
+
+        sbix.strikes[128] = strike
+
+        font["sbix"] = sbix
+
+        font.save(output_path)
+
+        # Verify that the resulting font can actually be reopened.
+        test_font = TTFont(output_path)
+
+        required_tables = {
+            "cmap",
+            "glyf",
+            "head",
+            "hhea",
+            "hmtx",
+            "maxp",
+            "name",
+            "OS/2",
+            "post",
+            "sbix"
+        }
+
+        missing = [
+            table
+            for table in required_tables
+            if table not in test_font
         ]
 
-        result = subprocess.run(
-            command,
-            cwd=workdir,
-            capture_output=True,
-            text=True,
-            timeout=120
-        )
+        test_font.close()
 
-        if result.returncode != 0:
-
-            details = (
-                result.stdout
-                or result.stderr
-                or "Unknown nanoemoji error."
-            )
-
-            return jsonify({
-                "error": "Font compiler failed.",
-                "details": details[-8000:]
-            }), 500
-
-        fonts = list(
-            output_dir.glob("*.ttf")
-        )
-
-        if not fonts:
-            fonts = list(
-                workdir.rglob("*.ttf")
-            )
-
-        if not fonts:
+        if missing:
             return jsonify({
                 "error":
-                "Compiler finished but no TTF was created.",
-                "details":
-                result.stdout[-8000:]
+                    "Font was created but is missing tables: "
+                    + ", ".join(missing)
             }), 500
 
-        finished_font = fonts[0]
-
-        final_path = (
-            Path(tempfile.gettempdir())
-            / f"{safe_name}.ttf"
-        )
-
-        shutil.copyfile(
-            finished_font,
-            final_path
-        )
-
         return send_file(
-            final_path,
+            output_path,
             mimetype="font/ttf",
             as_attachment=True,
             download_name=f"{safe_name}.ttf"
         )
 
-    except subprocess.TimeoutExpired:
-
-        return jsonify({
-            "error":
-            "Font compilation timed out."
-        }), 504
-
     except Exception as exc:
 
+        app.logger.exception(
+            "Color font compilation failed"
+        )
+
         return jsonify({
-            "error": str(exc)
+            "error": "Color font compilation failed.",
+            "details": str(exc)
         }), 500
 
     finally:
 
-        if workdir and workdir.exists():
-
-            shutil.rmtree(
-                workdir,
-                ignore_errors=True
-            )
+        # send_file may still need the file while constructing the
+        # response, so cleanup is intentionally skipped here.
+        # Render's temporary filesystem handles these temporary files.
+        pass
 
 
 if __name__ == "__main__":
