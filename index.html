@@ -261,6 +261,67 @@ function detect(){
    return Math.abs(ac-bc)<Math.max(a.h,b.h)*.4?a.x-b.x:a.y-b.y;
  });
 
+ // A-Z rescue mode:
+ // If exactly 25 pieces were found, assume one neighboring pair is still merged.
+ // Find the most suspiciously wide box and split it at its strongest interior
+ // whitespace valley. This is only used for the 25 -> 26 correction.
+ if(boxes.length===25){
+   const ratios=boxes.map((q,i)=>({i,ratio:q.w/Math.max(1,q.h),area:q.w*q.h}));
+   ratios.sort((a,b)=>b.ratio-a.ratio || b.area-a.area);
+
+   let repaired=false;
+   for(const candidate of ratios){
+     const q=boxes[candidate.i];
+     const projection=[];
+     for(let xx=q.x;xx<q.x+q.w;xx++){
+       let n=0;
+       for(let yy=q.y;yy<q.y+q.h;yy++) n+=fg[yy*w+xx];
+       projection.push(n);
+     }
+
+     const guard=Math.max(4,Math.floor(q.w*.22));
+     let best=-1,bestScore=Infinity;
+
+     for(let i=guard;i<projection.length-guard;i++){
+       // Smooth over a few columns so tiny bead gaps do not fool the splitter.
+       let score=0,count=0;
+       for(let k=-2;k<=2;k++){
+         if(i+k>=0&&i+k<projection.length){score+=projection[i+k];count++}
+       }
+       score/=Math.max(1,count);
+
+       let leftInk=0,rightInk=0;
+       const window=Math.max(5,Math.floor(q.w*.18));
+       for(let j=Math.max(0,i-window);j<i;j++)leftInk+=projection[j];
+       for(let j=i+1;j<=Math.min(projection.length-1,i+window);j++)rightInk+=projection[j];
+
+       if(leftInk>q.h*.20 && rightInk>q.h*.20 && score<bestScore){
+         best=i;bestScore=score;
+       }
+     }
+
+     // Only accept a reasonably central split.
+     if(best>guard && best<q.w-guard){
+       const splitX=q.x+best;
+       const left={x:q.x,y:q.y,w:splitX-q.x,h:q.h};
+       const right={x:splitX+1,y:q.y,w:(q.x+q.w)-(splitX+1),h:q.h};
+
+       if(left.w>4 && right.w>4){
+         boxes.splice(candidate.i,1,left,right);
+         repaired=true;
+         break;
+       }
+     }
+   }
+
+   if(repaired){
+     boxes.sort((a,b)=>{
+       const ac=a.y+a.h/2,bc=b.y+b.h/2;
+       return Math.abs(ac-bc)<Math.max(a.h,b.h)*.4?a.x-b.x:a.y-b.y;
+     });
+   }
+ }
+
  const pad=+$("#pad").value;
  pieces=boxes.map(q=>{
    const x=Math.max(0,Math.floor(q.x-pad)),y=Math.max(0,Math.floor(q.y-pad));
@@ -281,7 +342,9 @@ function detect(){
    return {char:"",png:c.toDataURL("image/png"),w:c.width,h:c.height};
  });
  render();syncBuilder();
- $("#status").textContent=`Detected ${pieces.length} piece${pieces.length===1?"":"s"}. Irregular/non-circle letters are supported.`;
+ $("#status").textContent=pieces.length===26
+   ? "Detected all 26 A–Z letters."
+   : `Detected ${pieces.length} piece${pieces.length===1?"":"s"}. Irregular/non-circle letters are supported.`;
 }
 function render(){
  const g=$("#glyphs");g.innerHTML="";
