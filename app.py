@@ -137,7 +137,7 @@ color_format = "glyf_colr_1"
             timeout=120
 
             
-                    if result.returncode != 0:
+                            if result.returncode != 0:
             details = result.stdout or result.stderr
 
             return jsonify({
@@ -147,14 +147,12 @@ color_format = "glyf_colr_1"
 
         fonts = list(output_dir.glob("*.ttf"))
 
-        fonts = list(output_dir.glob("*.ttf"))
-
         if not fonts:
             fonts = list(workdir.rglob("*.ttf"))
 
         if not fonts:
             return jsonify({
-                "error": "Compiler finished but no font was produced."
+                "error": "Compiler finished but no TTF was created."
             }), 500
 
         finished_font = fonts[0]
