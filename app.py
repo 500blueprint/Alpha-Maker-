@@ -137,7 +137,7 @@ color_format = "glyf_colr_1"
             timeout=120
 
             
-                            if result.returncode != 0:
+                    if result.returncode != 0:
             details = result.stdout or result.stderr
 
             return jsonify({
