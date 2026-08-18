@@ -1,6 +1,5 @@
 import io
 import os
-import shutil
 import tempfile
 from pathlib import Path
 
@@ -18,7 +17,6 @@ from fontTools.ttLib.tables.sbixStrike import Strike
 app = Flask(__name__)
 CORS(app)
 
-# Allow large alphabet uploads.
 app.config["MAX_CONTENT_LENGTH"] = 250 * 1024 * 1024
 
 
@@ -32,9 +30,7 @@ def home():
 
 @app.get("/health")
 def health():
-    return jsonify({
-        "status": "healthy"
-    })
+    return jsonify({"status": "healthy"})
 
 
 def clean_font_name(name):
@@ -42,7 +38,6 @@ def clean_font_name(name):
         c for c in name
         if c.isalnum() or c in ("-", "_")
     )
-
     return cleaned or "MoonlightColorAlpha"
 
 
@@ -54,10 +49,10 @@ def make_empty_glyph():
 
 def prepare_png(uploaded_file):
     """
-    Normalize each uploaded glyph into a transparent RGBA PNG.
+    Prepare one PNG for the sbix font.
 
-    The artwork itself is preserved. We only trim unused transparent
-    space and place it on a predictable transparent canvas.
+    Every glyph is normalized to the SAME visual height.
+    Its original aspect ratio is preserved.
     """
 
     raw = uploaded_file.read()
@@ -72,48 +67,65 @@ def prepare_png(uploaded_file):
     except Exception as exc:
         raise ValueError(
             f"{uploaded_file.filename or 'Uploaded file'} "
-            f"is not a valid PNG/image: {exc}"
+            f"is not a valid image: {exc}"
         )
 
+    # Trim only transparent empty area.
     alpha = image.getchannel("A")
     bbox = alpha.getbbox()
 
     if bbox:
         image = image.crop(bbox)
 
-    # Keep the glyph reasonably sized inside the font.
-    max_dimension = 900
+    if image.width <= 0 or image.height <= 0:
+        raise ValueError("A glyph image contained no visible artwork.")
 
-    scale = min(
-        max_dimension / max(image.width, 1),
-        max_dimension / max(image.height, 1),
-        1.0
+    # ---------------------------------------------------------
+    # IMPORTANT:
+    # Every letter gets the same target artwork height.
+    # This prevents A, B, C, etc. from randomly changing size.
+    # ---------------------------------------------------------
+
+    target_height = 900
+
+    scale = target_height / image.height
+
+    new_width = max(
+        1,
+        round(image.width * scale)
     )
 
-    if scale < 1:
-        image = image.resize(
-            (
-                max(1, round(image.width * scale)),
-                max(1, round(image.height * scale))
-            ),
-            Image.Resampling.LANCZOS
-        )
+    new_height = target_height
 
-    # Transparent padding prevents artwork from touching the edge.
-    padding = 40
+    image = image.resize(
+        (new_width, new_height),
+        Image.Resampling.LANCZOS
+    )
+
+    # Small, consistent transparent side bearing.
+    side_padding = 55
+
+    canvas_width = new_width + (side_padding * 2)
+    canvas_height = 1000
 
     canvas = Image.new(
         "RGBA",
-        (
-            image.width + padding * 2,
-            image.height + padding * 2
-        ),
+        (canvas_width, canvas_height),
         (0, 0, 0, 0)
     )
 
+    # Put every glyph on the SAME baseline.
+    #
+    # 50 px top margin
+    # 900 px artwork
+    # 50 px bottom margin
+
+    x = side_padding
+    y = 50
+
     canvas.alpha_composite(
         image,
-        (padding, padding)
+        (x, y)
     )
 
     output = io.BytesIO()
@@ -124,14 +136,22 @@ def prepare_png(uploaded_file):
         optimize=True
     )
 
-    return output.getvalue(), canvas.width, canvas.height
+    return {
+        "png": output.getvalue(),
+        "canvas_width": canvas_width,
+        "canvas_height": canvas_height,
+        "art_width": new_width,
+        "art_height": new_height
+    }
 
 
 @app.post("/compile")
 def compile_font():
+
     workdir = None
 
     try:
+
         font_name = request.form.get(
             "font_name",
             "Moonlight Color Alpha"
@@ -166,14 +186,19 @@ def compile_font():
 
         output_path = workdir / f"{safe_name}.ttf"
 
-        glyph_order = [".notdef", "space"]
+        glyph_order = [
+            ".notdef",
+            "space"
+        ]
 
         character_map = {}
         png_glyphs = {}
-
         used_codepoints = set()
 
-        for uploaded, character in zip(files, characters):
+        for uploaded, character in zip(
+            files,
+            characters
+        ):
 
             character = (character or "").strip()
 
@@ -183,7 +208,6 @@ def compile_font():
             char = character[0]
             codepoint = ord(char)
 
-            # Avoid duplicate character mappings.
             if codepoint in used_codepoints:
                 continue
 
@@ -191,27 +215,22 @@ def compile_font():
 
             glyph_name = f"uni{codepoint:04X}"
 
-            png_data, width, height = prepare_png(uploaded)
+            prepared = prepare_png(uploaded)
 
             glyph_order.append(glyph_name)
 
             character_map[codepoint] = glyph_name
 
-            png_glyphs[glyph_name] = {
-                "png": png_data,
-                "width": width,
-                "height": height
-            }
+            png_glyphs[glyph_name] = prepared
 
         if not png_glyphs:
             return jsonify({
                 "error": "No valid character PNGs were supplied."
             }), 400
 
-        # ----------------------------------------------------------
-        # Build a normal TrueType shell.
-        # The visible artwork is stored in the sbix color table.
-        # ----------------------------------------------------------
+        # =========================================================
+        # TRUE TYPE FONT SHELL
+        # =========================================================
 
         units_per_em = 1000
 
@@ -231,63 +250,77 @@ def compile_font():
 
         fb.setupGlyf(glyphs)
 
-        metrics = {}
+        # =========================================================
+        # SPACING
+        # =========================================================
 
-        metrics[".notdef"] = (1000, 0)
-        metrics["space"] = (500, 0)
+        metrics = {
+            ".notdef": (1000, 0),
+            "space": (450, 0)
+        }
 
         for glyph_name, data in png_glyphs.items():
 
-            # Width follows the original artwork proportions.
-            advance_width = int(
-                max(
-                    300,
-                    min(
-                        1400,
-                        1000 * data["width"] /
-                        max(data["height"], 1)
-                    )
-                )
+            # Because the PNG canvas and font both use a 1000-unit
+            # coordinate concept, the advance now follows the
+            # visible bitmap width naturally.
+
+            advance_width = data["canvas_width"]
+
+            # Prevent ridiculous spacing from unusually wide artwork.
+            advance_width = max(
+                350,
+                min(1500, advance_width)
             )
 
             metrics[glyph_name] = (
-                advance_width,
+                int(advance_width),
                 0
             )
 
         fb.setupHorizontalMetrics(metrics)
 
+        # =========================================================
+        # VERTICAL METRICS
+        # =========================================================
+
         fb.setupHorizontalHeader(
-            ascent=900,
-            descent=-100
+            ascent=950,
+            descent=-50,
+            lineGap=100
         )
 
         fb.setupNameTable({
             "familyName": font_name,
             "styleName": "Regular",
+
             "uniqueFontIdentifier":
-                f"{font_name} Moonlight Color",
+                f"{font_name} Moonlight Color 1.1",
+
             "fullName": font_name,
+
             "psName": safe_name,
-            "version": "Version 1.000"
+
+            "version": "Version 1.100"
         })
 
         fb.setupOS2(
-            sTypoAscender=900,
-            sTypoDescender=-100,
+            sTypoAscender=950,
+            sTypoDescender=-50,
+            sTypoLineGap=100,
+
             usWinAscent=1000,
-            usWinDescent=200
+            usWinDescent=100
         )
 
         fb.setupPost()
-
         fb.setupMaxp()
 
         fb.save(output_path)
 
-        # ----------------------------------------------------------
-        # Add sbix PNG color glyph table.
-        # ----------------------------------------------------------
+        # =========================================================
+        # SBIX COLOR BITMAP TABLE
+        # =========================================================
 
         font = TTFont(output_path)
 
@@ -297,14 +330,23 @@ def compile_font():
         sbix.flags = 1
         sbix.strikes = {}
 
+        # ---------------------------------------------------------
+        # KEY FIX:
+        #
+        # Our bitmap canvas is based around a 1000-unit design.
+        # Using 1000 ppem makes its relationship to the font's
+        # 1000 units-per-em predictable.
+        # ---------------------------------------------------------
+
+        strike_ppem = 1000
+
         strike = Strike(
-            ppem=128,
+            ppem=strike_ppem,
             resolution=72
         )
 
         strike.glyphs = {}
 
-        # Required empty glyphs.
         strike.glyphs[".notdef"] = SbixGlyph(
             glyphName=".notdef"
         )
@@ -315,23 +357,36 @@ def compile_font():
 
         for glyph_name, data in png_glyphs.items():
 
+            # sbix uses a baseline origin.
+            #
+            # Artwork occupies y=50 through y=950 in the PNG.
+            # Move the bitmap origin so all letters share the
+            # same baseline.
+
             glyph = SbixGlyph(
                 glyphName=glyph_name,
                 graphicType="png ",
                 imageData=data["png"],
+
                 originOffsetX=0,
-                originOffsetY=0
+
+                # Position bitmap consistently relative to baseline.
+                originOffsetY=-50
             )
 
             strike.glyphs[glyph_name] = glyph
 
-        sbix.strikes[128] = strike
+        sbix.strikes[strike_ppem] = strike
 
         font["sbix"] = sbix
 
         font.save(output_path)
+        font.close()
 
-        # Verify that the resulting font can actually be reopened.
+        # =========================================================
+        # VERIFY FONT
+        # =========================================================
+
         test_font = TTFont(output_path)
 
         required_tables = {
@@ -356,6 +411,7 @@ def compile_font():
         test_font.close()
 
         if missing:
+
             return jsonify({
                 "error":
                     "Font was created but is missing tables: "
@@ -376,16 +432,12 @@ def compile_font():
         )
 
         return jsonify({
-            "error": "Color font compilation failed.",
-            "details": str(exc)
+            "error":
+                "Color font compilation failed.",
+
+            "details":
+                str(exc)
         }), 500
-
-    finally:
-
-        # send_file may still need the file while constructing the
-        # response, so cleanup is intentionally skipped here.
-        # Render's temporary filesystem handles these temporary files.
-        pass
 
 
 if __name__ == "__main__":
