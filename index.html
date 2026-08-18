@@ -68,14 +68,11 @@ label.small{font-size:13px;color:var(--muted)}input[type=range]{width:180px}.sta
   </section>
 
   <section class="card">
-    <h2>5. Export</h2>
+    <h2>5. Save PNG</h2>
     <div class="row">
-      <input id="fontName" value="Moonlight Color Alpha" aria-label="Font name" style="flex:1;min-width:210px;padding:13px;border-radius:14px;background:#0d0918;color:#fff;border:1px solid #ffffff22">
-      <button id="savePNG">Save PNG</button>
-      <button id="exportTTF">Save TTF</button>
-      <button id="saveOTF">Save OTF</button>
+      <button id="savePNG">Save Transparent PNG</button>
     </div>
-    <p class="note">PNG exports always stay transparent. Individual PNG letters stay on standardized 5000 × 5000 canvases. TTF and OTF use the exact character assignments above.</p>
+    <p class="note">Exports your assigned alphabet as transparent PNG files. No TTF or OTF font export.</p>
   </section>
 </div>
 <script>
@@ -339,128 +336,8 @@ async function drawPreview(){
  loaded.filter(Boolean).forEach(o=>x.drawImage(o.im,o.x,base-o.h,o.w,o.h));
 }
 
-// ---- Minimal sfnt/OpenType writer with SVG color glyph table ----
-const U8=n=>new Uint8Array(n);
-function be16(a,o,v){a[o]=(v>>>8)&255;a[o+1]=v&255}
-function beS16(a,o,v){if(v<0)v=0x10000+v;be16(a,o,v)}
-function be32(a,o,v){a[o]=(v>>>24)&255;a[o+1]=(v>>>16)&255;a[o+2]=(v>>>8)&255;a[o+3]=v&255}
-function tag4(t){return new Uint8Array([...t].map(c=>c.charCodeAt(0)))}
-function cat(...arrs){let n=arrs.reduce((x,a)=>x+a.length,0),r=U8(n),o=0;for(const a of arrs){r.set(a,o);o+=a.length}return r}
-function pad4(a){let n=(4-a.length%4)%4;return n?cat(a,U8(n)):a}
-function checksum(a){let p=pad4(a),sum=0;for(let i=0;i<p.length;i+=4)sum=(sum+(((p[i]<<24)>>>0)|(p[i+1]<<16)|(p[i+2]<<8)|p[i+3]))>>>0;return sum>>>0}
-function utf8(s){return new TextEncoder().encode(s)}
-function utf16be(s){let a=U8(s.length*2);for(let i=0;i<s.length;i++)be16(a,i*2,s.charCodeAt(i));return a}
-function table_head(){
- let a=U8(54);be32(a,0,0x00010000);be32(a,4,0x00010000);be32(a,12,0x5F0F3CF5);be16(a,18,1000);
- // created/modified left zero
- beS16(a,36,0);beS16(a,38,-250);beS16(a,40,1000);beS16(a,42,900);
- be16(a,44,0);be16(a,46,8);beS16(a,48,2);beS16(a,50,0);beS16(a,52,0);return a
-}
-function table_hhea(n){
- let a=U8(36);be32(a,0,0x00010000);beS16(a,4,800);beS16(a,6,-200);beS16(a,8,0);be16(a,10,1000);
- beS16(a,18,1);beS16(a,20,0);beS16(a,22,0);beS16(a,32,0);be16(a,34,n);return a
-}
-function table_maxp(n){let a=U8(6);be32(a,0,0x00005000);be16(a,4,n);return a}
-function table_hmtx(n){let a=U8(n*4);for(let i=0;i<n;i++){be16(a,i*4,i?1000:500);beS16(a,i*4+2,0)}return a}
-function table_name(fontName){
- const family=utf16be(fontName), sub=utf16be("Regular"), full=utf16be(fontName+" Regular"), ps=utf16be(fontName.replace(/[^A-Za-z0-9]/g,"")+"-Regular");
- const vals=[[1,family],[2,sub],[4,full],[6,ps]], count=vals.length, header=U8(6+count*12);
- be16(header,0,0);be16(header,2,count);be16(header,4,6+count*12);
- let off=0, strings=[];
- vals.forEach((v,i)=>{let o=6+i*12;be16(header,o,3);be16(header,o+2,1);be16(header,o+4,0x0409);be16(header,o+6,v[0]);be16(header,o+8,v[1].length);be16(header,o+10,off);off+=v[1].length;strings.push(v[1])});
- return cat(header,...strings)
-}
-function table_post(){let a=U8(32);be32(a,0,0x00030000);return a}
-function table_os2(){
- let a=U8(96);be16(a,0,4);beS16(a,2,1000);be16(a,4,400);be16(a,6,5);be16(a,8,0);
- beS16(a,68,800);beS16(a,70,-200);beS16(a,72,0);be16(a,74,800);be16(a,76,200);
- // Unicode ranges: Basic Latin
- be32(a,42,1); a.set(utf8("MOON").slice(0,4),58);
- be16(a,62,0x40);be16(a,64,0x20);be16(a,66,0);
- be16(a,78,32);be16(a,80,126);be16(a,90,800);be16(a,92,200);return a
-}
-function table_cmap(entries){
- // format 4, one segment per code + sentinel
- entries=[...entries].sort((a,b)=>a.code-b.code);
- const segCount=entries.length+1, len=16+segCount*8, f=U8(len);
- be16(f,0,4);be16(f,2,len);be16(f,4,0);be16(f,6,segCount*2);
- let pow=1,sel=0;while(pow*2<=segCount){pow*=2;sel++}be16(f,8,pow*2);be16(f,10,sel);be16(f,12,segCount*2-pow*2);
- let end=14,start=16+segCount*2,delta=start+segCount*2,range=delta+segCount*2;
- entries.forEach((e,i)=>{be16(f,end+i*2,e.code);be16(f,start+i*2,e.code);be16(f,delta+i*2,(e.gid-e.code)&0xffff);be16(f,range+i*2,0)});
- be16(f,end+(segCount-1)*2,0xffff);be16(f,start+(segCount-1)*2,0xffff);be16(f,delta+(segCount-1)*2,1);be16(f,range+(segCount-1)*2,0);
- be16(f,end+segCount*2,0); // reservedPad
- let h=U8(12);be16(h,0,0);be16(h,2,1);be16(h,4,3);be16(h,6,1);be32(h,8,12);return cat(h,f)
-}
-function table_glyf_loca(n){
- // Empty outline glyphs: zero-length glyf entries; SVG table supplies visuals.
- return {glyf:U8(0),loca:U8((n+1)*2)}
-}
-function svgEscapeAttr(s){return s.replaceAll("&","&amp;").replaceAll('"',"&quot;").replaceAll("<","&lt;").replaceAll(">","&gt;")}
-function table_svg(glyphs){
- // SVG table: version, document index offset, reserved; index records point into document list.
- let docs=[], recs=[], docOff=0;
- glyphs.forEach((g,i)=>{
-   if(i===0)return;
-   let svg=`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000"><image width="1000" height="1000" preserveAspectRatio="xMidYMid meet" href="${svgEscapeAttr(g.png)}"/></svg>`;
-   let b=utf8(svg);docs.push(b);recs.push({gid:i,off:docOff,len:b.length});docOff+=b.length;
- });
- let index=U8(2+recs.length*12);be16(index,0,recs.length);
- recs.forEach((r,i)=>{let o=2+i*12;be16(index,o,r.gid);be16(index,o+2,r.gid);be32(index,o+4,r.off);be32(index,o+8,r.len)});
- let head=U8(10);be16(head,0,0);be32(head,2,10);be32(head,6,0);
- return cat(head,index,...docs)
-}
-
-function dataURLBytes(url){
- const b64=url.split(",")[1]||"";
- const bin=atob(b64),a=new Uint8Array(bin.length);
- for(let i=0;i<bin.length;i++)a[i]=bin.charCodeAt(i);
- return a;
-}
-function table_sbix(glyphs){
- // Apple sbix bitmap color glyph table: embeds each PNG directly in the font.
- // header: version=1, flags=1, numStrikes=1, strikeOffset=12
- const n=glyphs.length, head=U8(12);
- be16(head,0,1);be16(head,2,1);be32(head,4,1);be32(head,8,12);
- // strike header: ppem, ppi, offsets[n+1]
- const strikeHead=U8(4+(n+1)*4);
- be16(strikeHead,0,128);be16(strikeHead,2,72);
- let chunks=[],off=strikeHead.length;
- for(let gid=0;gid<n;gid++){
-   be32(strikeHead,4+gid*4,off);
-   if(gid===0) continue;
-   const png=dataURLBytes(glyphs[gid].png);
-   const rec=U8(8+png.length);
-   beS16(rec,0,0);beS16(rec,2,0);
-   rec.set(tag4("png "),4);rec.set(png,8);
-   chunks.push(rec);off+=rec.length;
- }
- be32(strikeHead,4+n*4,off);
- return cat(head,strikeHead,...chunks);
-}
-
-function buildOTF(fontName, mapped){
- const glyphs=[{char:"",png:""}].concat(mapped);
- const entries=mapped.map((g,i)=>({code:g.char.codePointAt(0),gid:i+1}));
- const gl=table_glyf_loca(glyphs.length);
- let tables={
-  "OS/2":table_os2(),
-  "SVG ":table_svg(glyphs),
-  "sbix":table_sbix(glyphs),
-  cmap:table_cmap(entries),glyf:gl.glyf,
-  head:table_head(),hhea:table_hhea(glyphs.length),hmtx:table_hmtx(glyphs.length),
-  loca:gl.loca,maxp:table_maxp(glyphs.length),name:table_name(fontName),post:table_post()
- };
- let names=Object.keys(tables).sort(),num=names.length,searchPow=1,selector=0;while(searchPow*2<=num){searchPow*=2;selector++}
- let header=U8(12+num*16);be32(header,0,0x00010000);be16(header,4,num);be16(header,6,searchPow*16);be16(header,8,selector);be16(header,10,num*16-searchPow*16);
- let offset=header.length, bodies=[];
- names.forEach((name,i)=>{let data=tables[name],o=12+i*16;header.set(tag4(name),o);be32(header,o+4,checksum(data));be32(header,o+8,offset);be32(header,o+12,data.length);let pd=pad4(data);bodies.push(pd);offset+=pd.length});
- let font=cat(header,...bodies);
- // checksumAdjustment in head
- let headIndex=names.indexOf("head"),headOffset=(header[12+headIndex*16+8]<<24>>>0)|(header[12+headIndex*16+9]<<16)|(header[12+headIndex*16+10]<<8)|header[12+headIndex*16+11];
- let adj=(0xB1B0AFBA-checksum(font))>>>0;be32(font,headOffset+8,adj);
- return font
-}
-
+// Font files are compiled by the Moonlight Render service.
+// TTF and OTF use the same server-side character mapping.
 
 function moonlightMappedGlyphs(){
  const seen=new Set();
@@ -469,7 +346,7 @@ function moonlightMappedGlyphs(){
  .filter(p=>{const cp=p.char.codePointAt(0);if(seen.has(cp))return false;seen.add(cp);return true});
 }
 function moonlightSafeName(){
- return (($("#fontName").value||"Moonlight Color Alpha").trim().replace(/[^A-Za-z0-9_-]+/g,"-")||"Moonlight-Color-Alpha");
+ return "Moonlight-Alpha";
 }
 function moonlightDownload(blob,filename){
  const url=URL.createObjectURL(blob),a=document.createElement("a");
@@ -490,36 +367,31 @@ $("#savePNG").onclick=async()=>{
  }
  $("#status").textContent="Transparent PNG export saved.";
 };
-$("#saveOTF").onclick=()=>{
- const mapped=moonlightMappedGlyphs();if(!mapped.length)return alert("Assign characters first.");
+async function compileMoonlightFont(format, button){
+ const mapped=moonlightMappedGlyphs();
+ if(!mapped.length)return alert("Assign characters first.");
+ const name=($("#fontName").value||"Moonlight Color Alpha").trim();
+ const old=button.textContent;
+ button.disabled=true; button.textContent="Compiling…";
+ $("#status").textContent=`Creating typeable ${format.toUpperCase()}…`;
  try{
-   const name=($("#fontName").value||"Moonlight Color Alpha").trim();
-   moonlightDownload(new Blob([buildOTF(name,mapped)],{type:"font/otf"}),`${moonlightSafeName()}.otf`);
-   $("#status").textContent="OTF saved.";
- }catch(err){console.error(err);alert("OTF export failed: "+err.message)}
-};
-$("#exportTTF").onclick=async()=>{
- const btn=$("#exportTTF"),mapped=moonlightMappedGlyphs();if(!mapped.length)return alert("Assign characters first.");
- const old=btn.textContent,name=($("#fontName").value||"Moonlight Color Alpha").trim();
- btn.disabled=true;btn.textContent="Compiling…";$("#status").textContent="Creating typeable TTF…";
- try{
-   const form=new FormData();form.append("font_name",name);
-   for(const g of mapped){
-     const blob=await(await fetch(g.png)).blob();
-     form.append("glyphs",blob,`U+${g.char.codePointAt(0).toString(16).toUpperCase()}.png`);
-     form.append("characters",g.char);
-   }
-   const response=await fetch("https://alpha-maker-1.onrender.com/compile",{method:"POST",body:form});
-   if(!response.ok){
-     let msg=`Compiler returned ${response.status}.`;
-     try{const d=await response.json();if(d.error)msg=d.error;if(d.details)msg+="\n\n"+d.details}catch{}
-     throw new Error(msg);
-   }
-   moonlightDownload(await response.blob(),`${moonlightSafeName()}.ttf`);
-   $("#status").textContent="TTF saved.";
- }catch(err){console.error(err);$("#status").textContent="TTF failed.";alert("TTF compiler error:\n\n"+err.message)}
- finally{btn.disabled=false;btn.textContent=old}
-};
+  const form=new FormData(); form.append("font_name",name); form.append("format",format);
+  for(const g of mapped){
+   const blob=await(await fetch(g.png)).blob();
+   form.append("glyphs",blob,`U+${g.char.codePointAt(0).toString(16).toUpperCase()}.png`);
+   form.append("characters",g.char);
+  }
+  const endpoint=format==="otf" ? "https://alpha-maker-1.onrender.com/compile/otf" : "https://alpha-maker-1.onrender.com/compile";
+  const response=await fetch(endpoint,{method:"POST",body:form});
+  if(!response.ok){let msg=`Compiler returned ${response.status}.`;try{const d=await response.json();if(d.error)msg=d.error;if(d.details)msg+="\n\n"+d.details}catch{}throw new Error(msg)}
+  moonlightDownload(await response.blob(),`${moonlightSafeName()}.${format}`);
+  $("#status").textContent=`${format.toUpperCase()} saved.`;
+ }catch(err){console.error(err);$("#status").textContent=`${format.toUpperCase()} failed.`;alert(`${format.toUpperCase()} compiler error:\n\n${err.message}`)}
+ finally{button.disabled=false;button.textContent=old}
+}
+$("#saveOTF").onclick=()=>compileMoonlightFont("otf",$("#saveOTF"));
+
+$("#exportTTF").onclick=()=>compileMoonlightFont("ttf",$("#exportTTF"));
 
 drawPreview();
 </script>
