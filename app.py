@@ -129,13 +129,13 @@ color_format = "glyf_colr_1"
 
         
 
-        result = subprocess.run(
+                result = subprocess.run(
             command,
             cwd=workdir,
             capture_output=True,
             text=True,
             timeout=120
-
+        )
             
                     if result.returncode != 0:
             details = result.stdout or result.stderr
