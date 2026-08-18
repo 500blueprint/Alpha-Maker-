@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Moonlight Color Font Maker</title>
+<style>
+:root{--bg:#100b20;--panel:#21163c;--ink:#fff;--muted:#cfc4e8;--accent:#d85cff;--accent2:#ff5bbd}
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(circle at top,#34205c,var(--bg) 55%);color:var(--ink);min-height:100vh}
+.wrap{max-width:900px;margin:auto;padding:18px}.hero{text-align:center;padding:18px 8px}.hero h1{margin:0;font-size:clamp(28px,7vw,52px)}.hero p{color:var(--muted)}
+.card{background:#ffffff0d;border:1px solid #ffffff22;border-radius:22px;padding:16px;margin:14px 0;box-shadow:0 14px 40px #0005}
+button,.btn,input,textarea{font:inherit}.btn,button{border:0;border-radius:14px;padding:13px 16px;font-weight:800;color:white;background:linear-gradient(135deg,var(--accent),var(--accent2));cursor:pointer}
+button.secondary{background:#ffffff14;border:1px solid #ffffff25}.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+input[type=file].picker{display:block!important;position:static!important;width:100%!important;height:auto!important;opacity:1!important;cursor:pointer;font-size:16px;color:#fff;background:#ffffff10;border:2px dashed #ffffff44;border-radius:18px;padding:12px}
+input[type=file].picker::file-selector-button{-webkit-appearance:none;appearance:none;border:0;border-radius:14px;padding:14px 16px;margin-right:10px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2))}
+.drop{display:block;border:2px dashed #ffffff44;border-radius:18px;padding:18px;text-align:center;color:var(--muted)}
+canvas{max-width:100%;background:#fff;border-radius:14px;display:block;margin:12px auto}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:10px}
+.glyph{background:#ffffff0d;border:1px solid #ffffff1c;border-radius:14px;padding:8px;text-align:center}.glyph img{width:100%;aspect-ratio:1;object-fit:contain;background:#fff;border-radius:9px}
+.glyph input{width:100%;margin-top:7px;padding:8px;border-radius:9px;border:1px solid #ffffff22;background:#0e091b;color:#fff;text-align:center;font-weight:800}
+label.small{font-size:13px;color:var(--muted)}input[type=range]{width:180px}.status{color:#f3d8ff;font-weight:700}.hide{display:none}
+.note{font-size:13px;color:var(--muted);line-height:1.45}textarea{width:100%;min-height:90px;border-radius:14px;padding:12px;background:#0d0918;color:#fff;border:1px solid #ffffff22}
+</style>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+</head>
+<body>
+<div class="wrap">
+  <div class="hero"><h1>🌙 Color Font Maker</h1><p>PNG alphabet sheet → detected glyphs → typeable color font project</p></div>
+
+  <section class="card">
+    <h2>1. Upload your PNG alpha</h2>
+    <div class="drop"><div style="font-weight:800;margin-bottom:10px">📷 Choose PNG / Photo</div>
+      <input id="file" class="picker" type="file" accept="image/*">
+      <button id="loadSelectedImage" type="button" style="margin-top:10px;width:100%">Load Selected Image</button>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <label class="small">Detection sensitivity <input id="alpha" type="range" min="1" max="200" value="20"></label>
+      <label class="small">Padding <input id="pad" type="range" min="0" max="30" value="6"></label>
+      <button id="detect" class="secondary">Detect again</button>
+    </div>
+    <canvas id="sheet" class="hide"></canvas>
+    <div id="status" class="status">Waiting for an image.</div><p class="note"><b>Best source:</b> 5000 × 5000 px transparent PNG letters. Full square canvases are preserved for consistent font sizing.</p>
+  </section>
+
+  <section class="card">
+    <h2>2. Assign characters</h2>
+    <p class="note">Detected pieces are sorted top-to-bottom, then left-to-right. Edit any character box if your sheet is arranged differently.</p>
+    <div class="row"><button id="az" class="secondary">Assign A–Z</button><button id="az09" class="secondary">Assign A–Z + 0–9</button><button id="clear" class="secondary">Clear</button></div>
+    <div id="glyphs" class="grid" style="margin-top:12px"></div>
+  </section>
+  <section class="card">
+    <h2>3. Font Glyph Organizer</h2>
+    <p class="note">Build an alphabet from separate transparent PNG letters. Upload many at once, assign them automatically, replace individual letters, reorder them, or remove mistakes.</p>
+    <div class="row">
+      <div style="flex:1;min-width:240px"><b>➕ Add Individual PNG Letters</b><input id="multiGlyph" class="picker" type="file" accept="image/png,image/jpeg,image/webp,image/*" multiple></div>
+      <button id="builderAZ" class="secondary">Auto A–Z</button>
+      <button id="builderAZ09" class="secondary">Auto A–Z + 0–9</button>
+      <button id="sortChars" class="secondary">Sort by Character</button>
+      <button id="clearBuilder" class="secondary">Clear Builder</button>
+    </div>
+    <div id="builderStatus" class="status" style="margin-top:10px">No individual letters added yet.</div>
+    <div id="builderGrid" class="grid" style="margin-top:12px"></div>
+  </section>
+
+  <section class="card">
+    <h2>4. Test your mapping</h2>
+    <textarea id="previewText" placeholder="Type something, e.g. MOONLIGHT"></textarea>
+    <canvas id="preview" width="850" height="220"></canvas>
+  </section>
+
+  <section class="card">
+    <h2>5. Export</h2>
+    <div class="row">
+      <input id="fontName" value="Moonlight Color Alpha" aria-label="Font name" style="flex:1;min-width:210px;padding:13px;border-radius:14px;background:#0d0918;color:#fff;border:1px solid #ffffff22">
+      <button id="savePNG">Save PNG</button>
+      <button id="exportTTF">Save TTF</button>
+      <button id="saveOTF">Save OTF</button>
+    </div>
+    <p class="note">PNG exports always stay transparent. Individual PNG letters stay on standardized 5000 × 5000 canvases. TTF and OTF are both compiled by the Moonlight server using the exact same character assignments above.</p>
+  </section>
+</div>
+<script>
+const $=s=>document.querySelector(s);
+let source=null, pieces=[];
+const sheet=$("#sheet"), ctx=sheet.getContext("2d",{willReadFrequently:true});
+
+async function loadMainImage(){
+ const input=$("#file");
+ const f=input && input.files && input.files[0];
+ if(!f){$("#status").textContent="Choose a photo first.";return;}
+
+ $("#status").textContent="Loading selected image…";
+ try{
+   // Object URLs are more reliable than FileReader for large iPhone Photos files.
+   const url=URL.createObjectURL(f);
+   const im=await new Promise((resolve,reject)=>{
+     const x=new Image();
+     x.onload=()=>resolve(x);
+     x.onerror=()=>reject(new Error("The selected photo could not be decoded."));
+     x.src=url;
+   });
+
+   source=im;
+   const iw=im.naturalWidth||im.width, ih=im.naturalHeight||im.height;
+   const maxSide=2400;
+   const scale=Math.min(1,maxSide/Math.max(iw,ih));
+   sheet.width=Math.max(1,Math.round(iw*scale));
+   sheet.height=Math.max(1,Math.round(ih*scale));
+   ctx.clearRect(0,0,sheet.width,sheet.height);
+   ctx.drawImage(im,0,0,sheet.width,sheet.height);
+   sheet.classList.remove("hide");
+   $("#status").textContent=`Image loaded (${sheet.width} × ${sheet.height}). Detecting…`;
+
+   // Keep the image alive through drawing, then release the temporary URL.
+   setTimeout(()=>URL.revokeObjectURL(url),5000);
+   setTimeout(()=>detect(),150);
+ }catch(err){
+   console.error(err);
+   source=null;
+   $("#status").textContent="Could not load that photo. Try saving it as PNG or JPG first.";
+   alert("Upload error: "+err.message);
+ }
+}
+
+// One event only prevents duplicate iPhone/Safari upload handling.
+$("#file").onchange=()=>loadMainImage();
+$("#loadSelectedImage").onclick=()=>loadMainImage();
+$("#detect").onclick=detect;
+
+function detect(){
+ if(!source){$("#status").textContent="Choose a PNG first.";return}
+ $("#status").textContent="Detecting letters…";
+ const w=sheet.width,h=sheet.height, threshold=+$("#alpha").value;
+ const img=ctx.getImageData(0,0,w,h), d=img.data;
+
+ // Detect foreground using transparency first. If the uploaded image has a solid
+ // background (common after saving from iPhone), fall back to edge/background-color difference.
+ let transparentCount=0;
+ for(let i=3;i<d.length;i+=4) if(d[i]<245) transparentCount++;
+ const hasTransparency=transparentCount>(w*h*.01);
+
+ let bg=[0,0,0], samples=[[2,2],[w-3,2],[2,h-3],[w-3,h-3]];
+ for(const [x,y] of samples){let i=(Math.max(0,y)*w+Math.max(0,x))*4;bg[0]+=d[i];bg[1]+=d[i+1];bg[2]+=d[i+2]}
+ bg=bg.map(v=>v/samples.length);
+
+ const fg=new Uint8Array(w*h);
+ for(let y=0;y<h;y++)for(let x=0;x<w;x++){
+   let p=y*w+x,i=p*4;
+   if(hasTransparency) fg[p]=d[i+3]>=threshold?1:0;
+   else{
+     let diff=Math.abs(d[i]-bg[0])+Math.abs(d[i+1]-bg[1])+Math.abs(d[i+2]-bg[2]);
+     fg[p]=diff>55?1:0;
+   }
+ }
+
+ // Row/column projection finds whole letters even when decorative artwork has disconnected pieces.
+ const row=new Uint32Array(h);
+ for(let y=0;y<h;y++){let n=0;for(let x=0;x<w;x++)n+=fg[y*w+x];row[y]=n}
+ const rowMin=Math.max(2,Math.floor(w*.002));
+ let bands=[],on=false,sy=0;
+ for(let y=0;y<=h;y++){
+   let active=y<h&&row[y]>=rowMin;
+   if(active&&!on){sy=y;on=true}
+   if(!active&&on){if(y-sy>4)bands.push([sy,y-1]);on=false}
+ }
+ // Merge row bands separated only by tiny gaps (dots, accents, disconnected decoration).
+ let merged=[];
+ for(const b of bands){
+   let prev=merged[merged.length-1];
+   if(prev && b[0]-prev[1] < Math.max(8,h*.018)) prev[1]=b[1];
+   else merged.push(b.slice());
+ }
+ bands=merged;
+
+ let boxes=[];
+ for(const [y1,y2] of bands){
+   const bh=y2-y1+1, col=new Uint32Array(w);
+   for(let x=0;x<w;x++){let n=0;for(let y=y1;y<=y2;y++)n+=fg[y*w+x];col[x]=n}
+   const colMin=Math.max(1,Math.floor(bh*.015));
+   let runs=[],cx0=0,cOn=false;
+   for(let x=0;x<=w;x++){
+     let active=x<w&&col[x]>=colMin;
+     if(active&&!cOn){cx0=x;cOn=true}
+     if(!active&&cOn){if(x-cx0>3)runs.push([cx0,x-1]);cOn=false}
+   }
+   // Merge tiny horizontal gaps that are likely parts of the same decorative letter.
+   let mr=[];
+   for(const r of runs){
+     let prev=mr[mr.length-1];
+     if(prev && r[0]-prev[1] < Math.max(5,w*.004)) prev[1]=r[1];
+     else mr.push(r.slice());
+   }
+   mr.forEach(([x1,x2])=>boxes.push({x:x1,y:y1,w:x2-x1+1,h:bh}));
+ }
+
+ // If projection was too aggressive, use connected components as fallback.
+ if(!boxes.length){
+   const seen=new Uint8Array(w*h),stack=[];
+   for(let y=0;y<h;y++)for(let x=0;x<w;x++){
+     let p=y*w+x;if(!fg[p]||seen[p])continue;
+     let minx=x,maxx=x,miny=y,maxy=y,count=0;stack.push(p);seen[p]=1;
+     while(stack.length){let q=stack.pop(),qx=q%w,qy=(q/w)|0;count++;minx=Math.min(minx,qx);maxx=Math.max(maxx,qx);miny=Math.min(miny,qy);maxy=Math.max(maxy,qy);
+       for(let yy=Math.max(0,qy-1);yy<=Math.min(h-1,qy+1);yy++)for(let xx=Math.max(0,qx-1);xx<=Math.min(w-1,qx+1);xx++){let n=yy*w+xx;if(fg[n]&&!seen[n]){seen[n]=1;stack.push(n)}}}
+     if(count>20)boxes.push({x:minx,y:miny,w:maxx-minx+1,h:maxy-miny+1});
+   }
+ }
+
+ boxes=boxes.filter(b=>b.w>4&&b.h>4).sort((a,b)=>a.y-b.y||a.x-b.x);
+ const pad=+$("#pad").value;
+ pieces=boxes.map(b=>{
+   const x=Math.max(0,b.x-pad),y=Math.max(0,b.y-pad),x2=Math.min(w,b.x+b.w+pad),y2=Math.min(h,b.y+b.h+pad);
+   const c=document.createElement("canvas");c.width=x2-x;c.height=y2-y;
+   const cx=c.getContext("2d",{willReadFrequently:true});
+   cx.clearRect(0,0,c.width,c.height);
+   cx.drawImage(sheet,x,y,c.width,c.height,0,0,c.width,c.height);
+   if(!hasTransparency){
+     const cut=cx.getImageData(0,0,c.width,c.height),cd=cut.data;
+     for(let yy=0;yy<c.height;yy++)for(let xx=0;xx<c.width;xx++){
+       const ii=(yy*c.width+xx)*4;
+       const diff=Math.abs(cd[ii]-bg[0])+Math.abs(cd[ii+1]-bg[1])+Math.abs(cd[ii+2]-bg[2]);
+       if(diff<=55)cd[ii+3]=0;
+     }
+     cx.putImageData(cut,0,0);
+   }
+   return {char:"",png:c.toDataURL("image/png"),w:c.width,h:c.height};
+ });
+ render();syncBuilder();
+ $("#status").textContent=pieces.length?`Detected ${pieces.length} letter piece${pieces.length===1?"":"s"}. If the count is wrong, adjust Detection sensitivity and tap Detect again.`:"No letters detected. Try moving Detection sensitivity lower, or use the individual-letter uploader.";
+}
+function render(){
+ const g=$("#glyphs");g.innerHTML="";
+ pieces.forEach((p,i)=>{const d=document.createElement("div");d.className="glyph";d.innerHTML=`<img src="${p.png}"><input maxlength="2" value="${esc(p.char)}" aria-label="Character ${i+1}">`;d.querySelector("input").oninput=e=>{p.char=e.target.value;drawPreview()};g.appendChild(d)});
+ drawPreview();
+}
+function esc(s){return (s||"").replaceAll("&","&amp;").replaceAll('"',"&quot;").replaceAll("<","&lt;")}
+function assign(chars){pieces.forEach((p,i)=>p.char=chars[i]||"");render()}
+$("#az").onclick=()=>assign("ABCDEFGHIJKLMNOPQRSTUVWXYZ");
+$("#az09").onclick=()=>assign("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
+$("#clear").onclick=()=>assign("");
+
+
+
+function syncBuilder(){
+ const g=$("#builderGrid");g.innerHTML="";
+ pieces.forEach((p,i)=>{
+   const d=document.createElement("div");d.className="glyph";
+   d.innerHTML=`<img src="${p.png}">
+   <input maxlength="2" value="${esc(p.char)}" aria-label="Character ${i+1}">
+   <div class="row" style="justify-content:center;margin-top:7px;gap:5px">
+     <button class="secondary up" style="padding:6px 9px">←</button>
+     <button class="secondary down" style="padding:6px 9px">→</button>
+     <button class="secondary replace" style="padding:6px 9px">↻</button>
+     <button class="secondary remove" style="padding:6px 9px">✕</button>
+   </div>
+   <input class="replaceFile" type="file" accept="image/png,image/*" style="display:none">`;
+   d.querySelector("input:not(.replaceFile)").oninput=e=>{p.char=e.target.value;render();syncBuilder()};
+   d.querySelector(".up").onclick=()=>{if(i>0){[pieces[i-1],pieces[i]]=[pieces[i],pieces[i-1]];render();syncBuilder()}};
+   d.querySelector(".down").onclick=()=>{if(i<pieces.length-1){[pieces[i+1],pieces[i]]=[pieces[i],pieces[i+1]];render();syncBuilder()}};
+   d.querySelector(".remove").onclick=()=>{pieces.splice(i,1);render();syncBuilder()};
+   const rf=d.querySelector(".replaceFile");
+   d.querySelector(".replace").onclick=()=>rf.click();
+   rf.onchange=e=>{
+     const f=e.target.files[0];if(!f)return;
+     const r=new FileReader();
+     r.onload=async()=>{
+       try{
+         const q=await normalizeGlyphTo5000(r.result);
+         p.png=q.png;p.w=5000;p.h=5000;render();syncBuilder();
+       }catch(err){alert("Replacement PNG error: "+err.message)}
+     };
+     r.readAsDataURL(f);
+   };
+   g.appendChild(d);
+ });
+ $("#builderStatus").textContent=pieces.length?`${pieces.length} glyph${pieces.length===1?"":"s"} in Alpha Builder.`:"No individual letters added yet.";
+}
+function normalizeGlyphTo5000(dataURL){
+ return new Promise((resolve,reject)=>{
+   const im=new Image();
+   im.onload=()=>{
+     const c=document.createElement("canvas");c.width=5000;c.height=5000;
+     const x=c.getContext("2d");x.clearRect(0,0,5000,5000);
+     if(im.width===5000&&im.height===5000){
+       x.drawImage(im,0,0);
+     }else{
+       const scale=Math.min(5000/im.width,5000/im.height);
+       const w=Math.round(im.width*scale),h=Math.round(im.height*scale);
+       x.drawImage(im,Math.round((5000-w)/2),Math.round((5000-h)/2),w,h);
+     }
+     resolve({char:"",png:c.toDataURL("image/png"),w:5000,h:5000});
+   };
+   im.onerror=()=>reject(new Error("Could not read PNG."));
+   im.src=dataURL;
+ });
+}
+$("#multiGlyph").addEventListener("change",async e=>{
+ const files=[...(e.target.files||[])];if(!files.length)return;
+ $("#builderStatus").textContent=`Loading ${files.length} letter${files.length===1?"":"s"}…`;
+ try{
+   for(const f of files){
+     const data=await new Promise((resolve,reject)=>{
+       const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=reject;r.readAsDataURL(f);
+     });
+     pieces.push(await normalizeGlyphTo5000(data));
+   }
+   render();syncBuilder();
+   $("#builderStatus").textContent=`${pieces.length} glyph${pieces.length===1?"":"s"} ready on 5000 × 5000 transparent canvases.`;
+ }catch(err){console.error(err);alert("Upload error: "+err.message)}
+ e.target.value="";
+});
+$("#builderAZ").onclick=()=>{assign("ABCDEFGHIJKLMNOPQRSTUVWXYZ");syncBuilder()};
+$("#builderAZ09").onclick=()=>{assign("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");syncBuilder()};
+$("#sortChars").onclick=()=>{pieces.sort((a,b)=>(a.char||"~").localeCompare(b.char||"~"));render();syncBuilder()};
+$("#clearBuilder").onclick=()=>{if(confirm("Clear all glyphs from the Alpha Builder?")){pieces=[];render();syncBuilder()}};
+
+$("#previewText").oninput=drawPreview;
+let previewToken=0;
+async function drawPreview(){
+ const token=++previewToken,c=$("#preview"),x=c.getContext("2d");
+ x.clearRect(0,0,c.width,c.height);x.fillStyle="#fff";x.fillRect(0,0,c.width,c.height);
+ const map=new Map(pieces.filter(p=>p.char).map(p=>[p.char.toUpperCase(),p]));
+ const text=$("#previewText").value.toUpperCase(), maxH=130, base=165;
+ let cursor=18, jobs=[];
+ for(const ch of text){
+   if(ch===" "){cursor+=45;continue}
+   const p=map.get(ch); if(!p){cursor+=45;continue}
+   const ratio=(p.w&&p.h)?p.w/p.h:1;
+   const dw=Math.min(110,Math.max(30,ratio*maxH));
+   const pos=cursor; cursor+=dw+8;
+   jobs.push(new Promise(resolve=>{
+     const im=new Image();
+     im.onload=()=>resolve({im,x:pos,w:dw,h:maxH});
+     im.onerror=()=>resolve(null);
+     im.src=p.png;
+   }));
+ }
+ const loaded=await Promise.all(jobs);
+ if(token!==previewToken)return;
+ x.clearRect(0,0,c.width,c.height);x.fillStyle="#fff";x.fillRect(0,0,c.width,c.height);
+ loaded.filter(Boolean).forEach(o=>x.drawImage(o.im,o.x,base-o.h,o.w,o.h));
+}
+
+// Font files are compiled by the Moonlight Render service.
+// TTF and OTF use the same server-side character mapping.
+
+function moonlightMappedGlyphs(){
+ const seen=new Set();
+ return pieces.filter(p=>p.char&&[...p.char][0]&&p.png)
+ .map(p=>({...p,char:[...p.char][0]}))
+ .filter(p=>{const cp=p.char.codePointAt(0);if(seen.has(cp))return false;seen.add(cp);return true});
+}
+function moonlightSafeName(){
+ return (($("#fontName").value||"Moonlight Color Alpha").trim().replace(/[^A-Za-z0-9_-]+/g,"-")||"Moonlight-Color-Alpha");
+}
+function moonlightDownload(blob,filename){
+ const url=URL.createObjectURL(blob),a=document.createElement("a");
+ a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();
+ setTimeout(()=>URL.revokeObjectURL(url),2500);
+}
+$("#savePNG").onclick=async()=>{
+ const mapped=moonlightMappedGlyphs();if(!mapped.length)return alert("Assign characters first.");
+ const safe=moonlightSafeName();
+ if(mapped.length===1){
+   const blob=await(await fetch(mapped[0].png)).blob();
+   moonlightDownload(blob,`${safe}-${mapped[0].char}.png`);
+ }else{
+   if(typeof JSZip==="undefined")return alert("ZIP support could not load.");
+   const zip=new JSZip(),folder=zip.folder(`${safe}-PNGs`);
+   mapped.forEach((g,i)=>folder.file(`${String(i+1).padStart(2,"0")}-${g.char}.png`,g.png.split(",")[1],{base64:true}));
+   moonlightDownload(await zip.generateAsync({type:"blob",compression:"DEFLATE"}),`${safe}-PNGs.zip`);
+ }
+ $("#status").textContent="Transparent PNG export saved.";
+};
+async function compileMoonlightFont(format, button){
+ const mapped=moonlightMappedGlyphs();
+ if(!mapped.length)return alert("Assign characters first.");
+ const name=($("#fontName").value||"Moonlight Color Alpha").trim();
+ const old=button.textContent;
+ button.disabled=true; button.textContent="Compiling…";
+ $("#status").textContent=`Creating typeable ${format.toUpperCase()}…`;
+ try{
+  const form=new FormData(); form.append("font_name",name); form.append("format",format);
+  for(const g of mapped){
+   const blob=await(await fetch(g.png)).blob();
+   form.append("glyphs",blob,`U+${g.char.codePointAt(0).toString(16).toUpperCase()}.png`);
+   form.append("characters",g.char);
+  }
+  const endpoint=format==="otf" ? "https://alpha-maker-1.onrender.com/compile/otf" : "https://alpha-maker-1.onrender.com/compile";
+  const response=await fetch(endpoint,{method:"POST",body:form});
+  if(!response.ok){let msg=`Compiler returned ${response.status}.`;try{const d=await response.json();if(d.error)msg=d.error;if(d.details)msg+="\n\n"+d.details}catch{}throw new Error(msg)}
+  moonlightDownload(await response.blob(),`${moonlightSafeName()}.${format}`);
+  $("#status").textContent=`${format.toUpperCase()} saved.`;
+ }catch(err){console.error(err);$("#status").textContent=`${format.toUpperCase()} failed.`;alert(`${format.toUpperCase()} compiler error:\n\n${err.message}`)}
+ finally{button.disabled=false;button.textContent=old}
+}
+$("#saveOTF").onclick=()=>compileMoonlightFont("otf",$("#saveOTF"));
+
+$("#exportTTF").onclick=()=>compileMoonlightFont("ttf",$("#exportTTF"));
+
+drawPreview();
+</script>
+</body></html>
