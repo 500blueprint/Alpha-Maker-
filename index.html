@@ -38,12 +38,12 @@ label.small{font-size:13px;color:var(--muted)}input[type=range]{width:180px}.sta
       <button id="detect" class="secondary">Detect again</button>
     </div>
     <canvas id="sheet" class="hide"></canvas>
-    <div id="status" class="status">Waiting for an image.</div><p class="note"><b>Best source:</b> 5000 × 5000 px transparent PNG letters. Full square canvases are preserved for consistent font sizing.</p>
+    <div id="status" class="status">Waiting for an image.</div><p class="note"><b>Best source:</b> transparent PNG artwork with visible spacing between pieces. Original detected proportions are preserved.</p>
   </section>
 
   <section class="card">
     <h2>2. Assign characters</h2>
-    <p class="note">Smart A–Z detection finds rows first, then separates each row into letter zones. This helps prevent half-letters and neighboring decorative letters bunching together.</p>
+    <p class="note">Detected artwork is split by its natural spacing and shape. Any number of letters or clipart pieces can be detected. Pieces are sorted top-to-bottom, then left-to-right.</p>
     <div class="row"><button id="az" class="secondary">Assign A–Z</button><button id="az09" class="secondary">Assign A–Z + 0–9</button><button id="clear" class="secondary">Clear</button></div>
     <div id="glyphs" class="grid" style="margin-top:12px"></div>
   </section>
@@ -125,23 +125,26 @@ $("#detect").onclick=detect;
 
 function detect(){
  if(!source){$("#status").textContent="Choose an image first.";return}
- $("#status").textContent="Detecting alphabet rows and letter zones…";
+ $("#status").textContent="Detecting letters…";
  const w=sheet.width,h=sheet.height,threshold=+$("#alpha").value;
  const img=ctx.getImageData(0,0,w,h),d=img.data;
 
+ // A file can be PNG without having transparency. Detect actual alpha pixels.
  let transparent=0;
  for(let i=3;i<d.length;i+=4)if(d[i]<245)transparent++;
  const hasTransparency=transparent>(w*h*.002);
 
+ // Sample many edge pixels to estimate a solid background when needed.
  const samples=[],step=Math.max(1,Math.floor(Math.min(w,h)/80));
  for(let x=0;x<w;x+=step){samples.push([x,0],[x,h-1])}
  for(let y=0;y<h;y+=step){samples.push([0,y],[w-1,y])}
- let rr=0,gg=0,bb=0;
- for(const [x,y] of samples){const i=(y*w+x)*4;rr+=d[i];gg+=d[i+1];bb+=d[i+2]}
- const bg=[rr/samples.length,gg/samples.length,bb/samples.length];
- const colorCut=Math.max(18,threshold*.65);
+ let r=0,g=0,b=0;
+ for(const [x,y] of samples){const i=(y*w+x)*4;r+=d[i];g+=d[i+1];b+=d[i+2]}
+ const bg=[r/samples.length,g/samples.length,b/samples.length];
 
+ // Build foreground mask from real transparency OR color distance from background.
  const fg=new Uint8Array(w*h);
+ const colorCut=Math.max(18,threshold*.65);
  for(let y=0;y<h;y++)for(let x=0;x<w;x++){
    const p=y*w+x,i=p*4;
    if(hasTransparency)fg[p]=d[i+3]>=threshold?1:0;
@@ -151,99 +154,183 @@ function detect(){
    }
  }
 
- // STEP 1: find visual rows, not individual connected shapes.
- const rowInk=new Uint32Array(h);
- for(let y=0;y<h;y++){let n=0;for(let x=0;x<w;x++)n+=fg[y*w+x];rowInk[y]=n}
- const rowCut=Math.max(2,Math.floor(w*.0015));
- let rawRows=[],on=false,y0=0;
- for(let y=0;y<=h;y++){
-   const active=y<h&&rowInk[y]>=rowCut;
-   if(active&&!on){y0=y;on=true}
-   if(!active&&on){
-     if(y-y0>Math.max(5,h*.008))rawRows.push({top:y0,bottom:y-1});
-     on=false;
+ // Connected components follow actual artwork shapes; circles are NOT required.
+ const seen=new Uint8Array(w*h),stack=[],comps=[];
+ const minPixels=Math.max(10,Math.floor(w*h*.000005));
+ for(let y=0;y<h;y++)for(let x=0;x<w;x++){
+   const p=y*w+x;if(!fg[p]||seen[p])continue;
+   seen[p]=1;stack.push(p);
+   let minx=x,maxx=x,miny=y,maxy=y,count=0;
+   while(stack.length){
+     const q=stack.pop(),qx=q%w,qy=(q/w)|0;
+     count++;minx=Math.min(minx,qx);maxx=Math.max(maxx,qx);miny=Math.min(miny,qy);maxy=Math.max(maxy,qy);
+     for(let yy=Math.max(0,qy-1);yy<=Math.min(h-1,qy+1);yy++)
+       for(let xx=Math.max(0,qx-1);xx<=Math.min(w-1,qx+1);xx++){
+         const n=yy*w+xx;if(fg[n]&&!seen[n]){seen[n]=1;stack.push(n)}
+       }
    }
+   if(count>=minPixels)comps.push({x:minx,y:miny,w:maxx-minx+1,h:maxy-miny+1,count});
  }
 
- let rows=[];
- for(const r of rawRows){
-   const last=rows[rows.length-1];
-   if(last&&r.top-last.bottom<Math.max(7,h*.018))last.bottom=r.bottom;
-   else rows.push({...r});
- }
- rows=rows.map(r=>{
-   let minx=w,maxx=-1;
-   for(let y=r.top;y<=r.bottom;y++)for(let x=0;x<w;x++)if(fg[y*w+x]){
-     minx=Math.min(minx,x);maxx=Math.max(maxx,x);
-   }
-   return {...r,minx,maxx,width:maxx>=minx?maxx-minx+1:0};
- }).filter(r=>r.width>0);
+ if(!comps.length){pieces=[];render();syncBuilder();$("#status").textContent="No artwork detected. Lower Detection sensitivity and try again.";return}
 
- if(!rows.length){
-   pieces=[];render();syncBuilder();
-   $("#status").textContent="No alphabet rows detected. Lower Detection sensitivity and try again.";
-   return;
- }
+ // Remove tiny decorative specks/noise.
+ const areas=comps.map(c=>c.w*c.h).sort((a,b)=>a-b);
+ const median=areas[Math.floor(areas.length/2)]||1;
+ let useful=comps.filter(c=>c.w*c.h>=Math.max(16,median*.02));
 
- // STEP 2: A-Z mode expects 26 positions. Allocate them by row span.
- const EXPECTED=26,totalWidth=rows.reduce((s,r)=>s+r.width,0)||1;
- let counts=rows.map(r=>Math.max(1,Math.round(EXPECTED*r.width/totalWidth)));
- while(counts.reduce((a,b)=>a+b,0)>EXPECTED){
-   let best=-1,score=-1;
-   counts.forEach((n,i)=>{if(n>1){const s=n/(rows[i].width||1);if(s>score){score=s;best=i}}});
-   if(best<0)break;counts[best]--;
+ // Group components into visual rows.
+ useful.sort((a,b)=>(a.y+a.h/2)-(b.y+b.h/2)||a.x-b.x);
+ const rows=[];
+ for(const c of useful){
+   const cy=c.y+c.h/2;
+   let row=rows.find(r=>{
+     const overlap=Math.max(0,Math.min(c.y+c.h,r.bottom)-Math.max(c.y,r.top));
+     return overlap>Math.min(c.h,r.bottom-r.top)*.15 || Math.abs(cy-r.cy)<Math.max(c.h,r.bottom-r.top)*.45;
+   });
+   if(!row)rows.push({items:[c],top:c.y,bottom:c.y+c.h,cy});
+   else{row.items.push(c);row.top=Math.min(row.top,c.y);row.bottom=Math.max(row.bottom,c.y+c.h);row.cy=(row.top+row.bottom)/2}
  }
- while(counts.reduce((a,b)=>a+b,0)<EXPECTED){
-   let best=0,score=-1;
-   counts.forEach((n,i)=>{const s=rows[i].width/n;if(s>score){score=s;best=i}});
-   counts[best]++;
- }
+ rows.sort((a,b)=>a.top-b.top);
 
+ // Merge nearby disconnected decorations into the same glyph without assuming round cells.
  let boxes=[];
- rows.forEach((row,ri)=>{
-   const count=counts[ri],col=new Uint32Array(w);
-   for(let x=row.minx;x<=row.maxx;x++){
-     let n=0;for(let y=row.top;y<=row.bottom;y++)n+=fg[y*w+x];col[x]=n;
+ for(const row of rows){
+   row.items.sort((a,b)=>a.x-b.x);
+   const hs=row.items.map(c=>c.h).sort((a,b)=>a-b);
+   const typicalH=hs[Math.floor(hs.length/2)]||1;
+   const mergeGap=Math.max(3,typicalH*.10);
+   const groups=[];
+   for(const c of row.items){
+     const last=groups[groups.length-1];
+     if(!last){groups.push({x:c.x,y:c.y,x2:c.x+c.w,y2:c.y+c.h});continue}
+     const gap=c.x-last.x2;
+     const overlap=Math.max(0,Math.min(c.y+c.h,last.y2)-Math.max(c.y,last.y));
+     const overlapRatio=overlap/Math.max(1,Math.min(c.h,last.y2-last.y));
+     if(gap<=mergeGap && (overlapRatio>.08 || gap<typicalH*.04)){
+       last.x=Math.min(last.x,c.x);last.y=Math.min(last.y,c.y);last.x2=Math.max(last.x2,c.x+c.w);last.y2=Math.max(last.y2,c.y+c.h);
+     }else groups.push({x:c.x,y:c.y,x2:c.x+c.w,y2:c.y+c.h});
    }
-   const span=row.maxx-row.minx+1,nominal=span/count,bounds=[row.minx];
-
-   // STEP 3: snap expected boundaries to the lowest-ink gap nearby.
-   for(let k=1;k<count;k++){
-     const ideal=row.minx+k*nominal,radius=Math.max(4,Math.floor(nominal*.34));
-     let bestX=Math.round(ideal),bestScore=Infinity;
-     for(let x=Math.max(row.minx+2,Math.floor(ideal-radius));x<=Math.min(row.maxx-2,Math.ceil(ideal+radius));x++){
-       let score=0,n=0;
-       for(let dx=-2;dx<=2;dx++)if(x+dx>=row.minx&&x+dx<=row.maxx){score+=col[x+dx];n++}
-       score/=Math.max(1,n);
-       score+=Math.abs(x-ideal)*.025;
-       if(score<bestScore){bestScore=score;bestX=x}
+   // Split suspiciously wide merged groups using whitespace valleys.
+   // This catches neighbors such as S + T that nearly touch, while leaving
+   // naturally irregular single letters intact.
+   for(const q of groups){
+     const gw=q.x2-q.x, gh=q.y2-q.y;
+     if(gw < typicalH*1.18){
+       boxes.push({x:q.x,y:q.y,w:gw,h:gh});
+       continue;
      }
-     bounds.push(bestX);
-   }
-   bounds.push(row.maxx+1);
 
-   // STEP 4: each zone owns all artwork inside it, including detached decorations.
-   for(let k=0;k<count;k++){
-     const left=bounds[k],right=bounds[k+1]-1;
-     if(right<=left)continue;
-     let minx=right,maxx=left,miny=row.bottom,maxy=row.top,found=false;
-     for(let y=row.top;y<=row.bottom;y++)for(let x=left;x<=right;x++)if(fg[y*w+x]){
-       found=true;minx=Math.min(minx,x);maxx=Math.max(maxx,x);miny=Math.min(miny,y);maxy=Math.max(maxy,y);
+     // Count foreground pixels in each column of this candidate group.
+     const projection=[];
+     for(let xx=q.x;xx<q.x2;xx++){
+       let n=0;
+       for(let yy=q.y;yy<q.y2;yy++) n+=fg[yy*w+xx];
+       projection.push(n);
      }
-     if(found)boxes.push({x:minx,y:miny,w:maxx-minx+1,h:maxy-miny+1});
+
+     // Find meaningful low-density valleys away from the outer edges.
+     const edgeGuard=Math.max(4,Math.floor(gw*.18));
+     const valleyLimit=Math.max(1,Math.floor(gh*.035));
+     let best=-1,bestValue=Infinity;
+     for(let i=edgeGuard;i<projection.length-edgeGuard;i++){
+       const v=projection[i];
+       if(v<=valleyLimit && v<bestValue){
+         // Require some artwork on both sides so decorations do not create
+         // accidental cuts at the edge of one letter.
+         let left=0,right=0;
+         for(let j=Math.max(0,i-Math.floor(gw*.16));j<i;j++)left+=projection[j];
+         for(let j=i+1;j<=Math.min(projection.length-1,i+Math.floor(gw*.16));j++)right+=projection[j];
+         if(left>gh*.15 && right>gh*.15){best=i;bestValue=v}
+       }
+     }
+
+     if(best>0){
+       const splitX=q.x+best;
+       boxes.push({x:q.x,y:q.y,w:splitX-q.x,h:gh});
+       boxes.push({x:splitX+1,y:q.y,w:q.x2-(splitX+1),h:gh});
+     }else{
+       boxes.push({x:q.x,y:q.y,w:gw,h:gh});
+     }
    }
+ }
+
+ boxes=boxes.filter(q=>q.w>3&&q.h>3);
+ boxes.sort((a,b)=>{
+   const ac=a.y+a.h/2,bc=b.y+b.h/2;
+   return Math.abs(ac-bc)<Math.max(a.h,b.h)*.4?a.x-b.x:a.y-b.y;
  });
+
+ // A-Z rescue mode:
+ // If exactly 25 pieces were found, assume one neighboring pair is still merged.
+ // Find the most suspiciously wide box and split it at its strongest interior
+ // whitespace valley. This is only used for the 25 -> 26 correction.
+ if(boxes.length===25){
+   const ratios=boxes.map((q,i)=>({i,ratio:q.w/Math.max(1,q.h),area:q.w*q.h}));
+   ratios.sort((a,b)=>b.ratio-a.ratio || b.area-a.area);
+
+   let repaired=false;
+   for(const candidate of ratios){
+     const q=boxes[candidate.i];
+     const projection=[];
+     for(let xx=q.x;xx<q.x+q.w;xx++){
+       let n=0;
+       for(let yy=q.y;yy<q.y+q.h;yy++) n+=fg[yy*w+xx];
+       projection.push(n);
+     }
+
+     const guard=Math.max(4,Math.floor(q.w*.22));
+     let best=-1,bestScore=Infinity;
+
+     for(let i=guard;i<projection.length-guard;i++){
+       // Smooth over a few columns so tiny bead gaps do not fool the splitter.
+       let score=0,count=0;
+       for(let k=-2;k<=2;k++){
+         if(i+k>=0&&i+k<projection.length){score+=projection[i+k];count++}
+       }
+       score/=Math.max(1,count);
+
+       let leftInk=0,rightInk=0;
+       const window=Math.max(5,Math.floor(q.w*.18));
+       for(let j=Math.max(0,i-window);j<i;j++)leftInk+=projection[j];
+       for(let j=i+1;j<=Math.min(projection.length-1,i+window);j++)rightInk+=projection[j];
+
+       if(leftInk>q.h*.20 && rightInk>q.h*.20 && score<bestScore){
+         best=i;bestScore=score;
+       }
+     }
+
+     // Only accept a reasonably central split.
+     if(best>guard && best<q.w-guard){
+       const splitX=q.x+best;
+       const left={x:q.x,y:q.y,w:splitX-q.x,h:q.h};
+       const right={x:splitX+1,y:q.y,w:(q.x+q.w)-(splitX+1),h:q.h};
+
+       if(left.w>4 && right.w>4){
+         boxes.splice(candidate.i,1,left,right);
+         repaired=true;
+         break;
+       }
+     }
+   }
+
+   if(repaired){
+     boxes.sort((a,b)=>{
+       const ac=a.y+a.h/2,bc=b.y+b.h/2;
+       return Math.abs(ac-bc)<Math.max(a.h,b.h)*.4?a.x-b.x:a.y-b.y;
+     });
+   }
+ }
 
  const pad=+$("#pad").value;
  pieces=boxes.map(q=>{
-   const x=Math.max(0,q.x-pad),y=Math.max(0,q.y-pad);
-   const x2=Math.min(w,q.x+q.w+pad),y2=Math.min(h,q.y+q.h+pad);
+   const x=Math.max(0,Math.floor(q.x-pad)),y=Math.max(0,Math.floor(q.y-pad));
+   const x2=Math.min(w,Math.ceil(q.x+q.w+pad)),y2=Math.min(h,Math.ceil(q.y+q.h+pad));
    const c=document.createElement("canvas");c.width=x2-x;c.height=y2-y;
    const cx=c.getContext("2d",{willReadFrequently:true});
-   cx.clearRect(0,0,c.width,c.height);
-   cx.drawImage(sheet,x,y,c.width,c.height,0,0,c.width,c.height);
+   cx.clearRect(0,0,c.width,c.height);cx.drawImage(sheet,x,y,c.width,c.height,0,0,c.width,c.height);
 
-   // Always export transparency.
+   // Saved pieces are always transparent PNGs.
    if(!hasTransparency){
      const cut=cx.getImageData(0,0,c.width,c.height),cd=cut.data;
      for(let yy=0;yy<c.height;yy++)for(let xx=0;xx<c.width;xx++){
@@ -254,13 +341,11 @@ function detect(){
    }
    return {char:"",png:c.toDataURL("image/png"),w:c.width,h:c.height};
  });
-
  render();syncBuilder();
  $("#status").textContent=pieces.length===26
-   ?"Detected all 26 A–Z letter zones."
-   :`Detected ${pieces.length} letter zones. Adjust Detection sensitivity if needed.`;
+   ? "Detected all 26 A–Z letters."
+   : `Detected ${pieces.length} piece${pieces.length===1?"":"s"}. Irregular/non-circle letters are supported.`;
 }
-
 function render(){
  const g=$("#glyphs");g.innerHTML="";
  pieces.forEach((p,i)=>{const d=document.createElement("div");d.className="glyph";d.innerHTML=`<img src="${p.png}"><input maxlength="2" value="${esc(p.char)}" aria-label="Character ${i+1}">`;d.querySelector("input").oninput=e=>{p.char=e.target.value;drawPreview()};g.appendChild(d)});
@@ -312,16 +397,13 @@ function normalizeGlyphTo5000(dataURL){
  return new Promise((resolve,reject)=>{
    const im=new Image();
    im.onload=()=>{
-     const c=document.createElement("canvas");c.width=5000;c.height=5000;
-     const x=c.getContext("2d");x.clearRect(0,0,5000,5000);
-     if(im.width===5000&&im.height===5000){
-       x.drawImage(im,0,0);
-     }else{
-       const scale=Math.min(5000/im.width,5000/im.height);
-       const w=Math.round(im.width*scale),h=Math.round(im.height*scale);
-       x.drawImage(im,Math.round((5000-w)/2),Math.round((5000-h)/2),w,h);
-     }
-     resolve({char:"",png:c.toDataURL("image/png"),w:5000,h:5000});
+     const c=document.createElement("canvas");
+     c.width=im.naturalWidth||im.width;
+     c.height=im.naturalHeight||im.height;
+     const x=c.getContext("2d");
+     x.clearRect(0,0,c.width,c.height);
+     x.drawImage(im,0,0);
+     resolve({char:"",png:c.toDataURL("image/png"),w:c.width,h:c.height});
    };
    im.onerror=()=>reject(new Error("Could not read PNG."));
    im.src=dataURL;
@@ -338,7 +420,7 @@ $("#multiGlyph").addEventListener("change",async e=>{
      pieces.push(await normalizeGlyphTo5000(data));
    }
    render();syncBuilder();
-   $("#builderStatus").textContent=`${pieces.length} glyph${pieces.length===1?"":"s"} ready on 5000 × 5000 transparent canvases.`;
+   $("#builderStatus").textContent=`${pieces.length} glyph${pieces.length===1?"":"s"} ready at their original proportions.`;
  }catch(err){console.error(err);alert("Upload error: "+err.message)}
  e.target.value="";
 });
